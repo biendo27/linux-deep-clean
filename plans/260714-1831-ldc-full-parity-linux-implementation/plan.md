@@ -1,7 +1,7 @@
 ---
 title: "LDC full-parity Linux implementation"
 description: "Implement the independently authored, plan-first Linux Deep Clean product and qualify its complete Linux-native command contract."
-status: pending
+status: in-progress
 priority: P1
 effort: "32-48 engineer-weeks"
 branch: main
@@ -75,7 +75,7 @@ Later implementation may parallelize read-only adapters behind stable Phase 4 in
 
 | # | Phase | Status | Exit gate |
 |---:|---|---|---|
-| 1 | [Repository, toolchain, and contract harness](./phase-01-start.md) | Pending | Permanent remote/module selected; hermetic harness and import gates pass |
+| 1 | [Repository, toolchain, and contract harness](./phase-01-start.md) | Completed | Permanent remote/module selected; hermetic harness and import gates pass |
 | 2 | [Canonical domain and plan protocol](./phase-02-canonical-domain-and-plan-protocol.md) | Pending | BytePath, schema, deterministic CBOR/digest, and result states frozen |
 | 3 | [Linux filesystem safety and Trash](./phase-03-linux-filesystem-safety-and-trash.md) | Pending | Anchored staging, durability/reconciliation, and adversarial smoke gates pass |
 | 4 | [Policy engine, state, and recovery](./phase-04-policy-engine-state-and-recovery.md) | Pending | Deterministic planning, monotonic policy, private durable state, recovery pass |
@@ -86,6 +86,8 @@ Later implementation may parallelize read-only adapters behind stable Phase 4 in
 | 9 | [Privileged package and system mutation](./phase-09-privileged-package-and-system-mutation.md) | Pending | Per-provider validator+executor+drift+reconciliation VM slices pass |
 | 10 | [Optimization, fingerprint, and remaining parity](./phase-10-optimization-fingerprint-and-remaining-parity.md) | Pending | Every approved command has honest supported/degraded behavior |
 | 11 | [Packaging, release, and VM qualification](./phase-11-packaging-release-and-vm-qualification.md) | Pending | Native/rootless artifacts and all release gates pass on 15 guests |
+
+Phase 1 completion evidence: [bootstrap handoff report](./reports/pm-260715-2132-phase-1-bootstrap.md).
 
 ## Decision and Entry Gates
 

@@ -1,7 +1,7 @@
 ---
 phase: 1
 title: "Repository, Toolchain, and Contract Harness"
-status: pending
+status: completed
 priority: P1
 effort: "4-6 engineer-days"
 dependencies: []
@@ -13,7 +13,7 @@ dependencies: []
 
 Create the smallest real Go repository that fixes product identity, licensing, build reproducibility, layer boundaries, and safe test lanes. This phase delivers only offline help/version/bootstrap behavior and an uninstalled helper binary that rejects every request; it does not discover or mutate anything.
 
-Entry gate: configure a permanent Git remote and choose the permanent module path from that remote **before** `go mod init`. The repository currently has no remote. Do not invent an owner, use a temporary module path, or initialize the module until a maintainer supplies this decision.
+Entry gate satisfied: the permanent Git remote was configured and the permanent module path was chosen from that remote **before** `go mod init`. No owner or temporary module path was invented.
 
 Context: [design report](../reports/260714-1754-ldc-linux-native-design-report.md), [toolchain research](./research/01-go-toolchain-and-repository-architecture.md), [scout report](./reports/scout-report.md).
 
@@ -51,12 +51,12 @@ The main command owns only process startup. Cobra stays in `internal/presenters/
 
 ### Planned interface/function/type checklist
 
-- [ ] `application.BuildInfo` contains semantic version, commit, build time, Go version, and dirty flag; `Validate()` rejects missing release fields while allowing an explicit development form.
-- [ ] `application.RequireUnprivileged(euid int) error` is pure/testable; production startup passes only `os.Geteuid()` and offers no flag/env override.
-- [ ] `application.Bootstrap` exposes only `BuildInfo()` and `RequireUnprivileged()` to the presenter.
-- [ ] `cli.NewRootCommand(application.Bootstrap) *cobra.Command` wires help/version without discovery, state, network, or mutation.
-- [ ] `cli.Execute(context.Context, application.Bootstrap, io.Writer, io.Writer) int` maps bootstrap errors to stable process summaries without calling `os.Exit` below `main`.
-- [ ] Helper `main` closes over no application object and returns one bounded rejection on stderr plus a non-zero exit without parsing caller data.
+- [x] `application.BuildInfo` contains semantic version, commit, build time, Go version, and dirty flag; `Validate()` rejects missing release fields while allowing an explicit development form.
+- [x] `application.RequireUnprivileged(euid int) error` is pure/testable; production startup passes only `os.Geteuid()` and offers no flag/env override.
+- [x] `application.Bootstrap` exposes only `BuildInfo()` and `RequireUnprivileged()` to the presenter.
+- [x] `cli.NewRootCommand(application.Bootstrap) *cobra.Command` wires help/version without discovery, state, network, or mutation.
+- [x] `cli.Execute(context.Context, application.Bootstrap, io.Writer, io.Writer) int` maps bootstrap errors to stable process summaries without calling `os.Exit` below `main`.
+- [x] Helper `main` closes over no application object and returns one bounded rejection on stderr plus a non-zero exit without parsing caller data.
 
 ### Import constraints
 
@@ -150,13 +150,13 @@ Run the default suite inside CI's network-disabled namespace after dependencies 
 
 ## Success Criteria
 
-- [ ] Permanent Git remote and module path are explicitly selected before `go mod init`; no invented owner/path exists.
-- [ ] Only `ldclean` is built as the user executable; repository search and black-box tests find no executable/alias contract named `ldc`.
-- [ ] `ldclean` rejects EUID 0 before dispatch and provides deterministic offline help/version as an unprivileged process.
-- [ ] Helper builds but rejects all inputs, imports only the standard library, and is neither installed nor authorized.
-- [ ] Default tests are demonstrably offline, unprivileged, and exclude integration/VM lanes; VM lane requires both independent guards.
-- [ ] Import allowlists, race, vet, focused coverage, and reproducible `-trimpath` builds pass.
-- [ ] Apache-2.0 and provenance policy are present; no copied upstream artifact or unsupported product claim is introduced.
+- [x] Permanent Git remote and module path are explicitly selected before `go mod init`; no invented owner/path exists.
+- [x] Only `ldclean` is built as the user executable; repository search and black-box tests find no executable/alias contract named `ldc`.
+- [x] `ldclean` rejects EUID 0 before dispatch and provides deterministic offline help/version as an unprivileged process.
+- [x] Helper builds but rejects all inputs, imports only the standard library, and is neither installed nor authorized.
+- [x] Default tests are demonstrably offline, unprivileged, and exclude integration/VM lanes; VM lane requires both independent guards.
+- [x] Import allowlists, race, vet, focused coverage, and reproducible `-trimpath` builds pass.
+- [x] Apache-2.0 and provenance policy are present; no copied upstream artifact or unsupported product claim is introduced.
 
 ## Risk Assessment and Rollback
 
