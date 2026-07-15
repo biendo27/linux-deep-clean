@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .go-version
+          check-latest: false
+
+      - name: Verify pinned local toolchain
+        run: |
+          test "$(GOROOT= go env GOVERSION)" = "go$(tr -d '[:space:]' < .go-version)"
+          GOROOT= GOTOOLCHAIN=local go version
+
+      - name: Populate and verify the module cache
+        run: |
+          GOROOT= GOTOOLCHAIN=local GOWORK=off GOFLAGS= go mod download
+          GOROOT= GOTOOLCHAIN=local GOWORK=off GOFLAGS= go mod verify
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Run the default suite offline in a network namespace
+        run: |
+          runner_user="$(id -un)"
+          runner_home="$HOME"
+          runner_path="$PATH"
+          sudo env RUNNER_USER="$runner_user" RUNNER_HOME="$runner_home" RUNNER_PATH="$runner_path" \
+            unshare --net --fork --mount-proc /bin/bash -ceu '
+              test "$(id -u)" = 0
+              exec sudo -u "$RUNNER_USER" env \
+                HOME="$RUNNER_HOME" PATH="$RUNNER_PATH" \
+                GOROOT= GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOFLAGS= \
+                go test -mod=readonly ./...
+            '
+
+      - name: Run the race suite offline in a network namespace
+        run: |
+          runner_user="$(id -un)"
+          runner_home="$HOME"
+          runner_path="$PATH"
+          sudo env RUNNER_USER="$runner_user" RUNNER_HOME="$runner_home" RUNNER_PATH="$runner_path" \
+            unshare --net --fork --mount-proc /bin/bash -ceu '
+              test "$(id -u)" = 0
+              exec sudo -u "$RUNNER_USER" env \
+                HOME="$RUNNER_HOME" PATH="$RUNNER_PATH" \
+                GOROOT= GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOFLAGS= \
+                go test -mod=readonly -race ./...
+            '
+
+      - name: Run vet and architecture gates offline
+        run: |
+          GOROOT= GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOFLAGS= go vet -mod=readonly ./...
+          GOROOT= GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOFLAGS= go test -mod=readonly ./internal/architecture -run TestArchitectureImportAllowlists -count=1
+
+      - name: Enforce focused bootstrap coverage in a network namespace
+        run: |
+          runner_user="$(id -un)"
+          runner_home="$HOME"
+          runner_path="$PATH"
+          sudo env RUNNER_USER="$runner_user" RUNNER_HOME="$runner_home" RUNNER_PATH="$runner_path" \
+            unshare --net --fork --mount-proc /bin/bash -ceu '
+              test "$(id -u)" = 0
+              exec sudo -u "$RUNNER_USER" env \
+                HOME="$RUNNER_HOME" PATH="$RUNNER_PATH" \
+                GOROOT= GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOFLAGS= \
+                make coverage
+            '
+
+      - name: Exercise VM guard unit tests offline in a network namespace
+        run: |
+          runner_user="$(id -un)"
+          runner_home="$HOME"
+          runner_path="$PATH"
+          sudo env RUNNER_USER="$runner_user" RUNNER_HOME="$runner_home" RUNNER_PATH="$runner_path" \
+            unshare --net --fork --mount-proc /bin/bash -ceu '
+              test "$(id -u)" = 0
+              exec sudo -u "$RUNNER_USER" env \
+                HOME="$RUNNER_HOME" PATH="$RUNNER_PATH" \
+                GOROOT= GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOFLAGS= \
+                make vmtest-unit
+            '
+
+      - name: Compile opt-in lanes
+        run: |
+          GOROOT= GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOFLAGS= go test -mod=readonly -tags=integration ./tests/integration -run '^$' -count=1
+          vmtest_directory="$(mktemp -d)"
+          GOROOT= GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOFLAGS= go test -mod=readonly -tags=vmtest -c -o "$vmtest_directory/linux-deep-clean-vmtest.test" ./tests/vm
+          rm -rf "$vmtest_directory"
+
+      - name: Build reproducibly
+        run: |
+          make build
+          go version -m bin/ldclean
+          go version -m bin/linux-deep-clean-helper
