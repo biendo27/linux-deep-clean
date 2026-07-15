@@ -46,6 +46,6 @@ The privilege protocol was also tightened so each helper invocation carries the 
 
 Hand off to the TDD implementation workflow with:
 
-`/ak:cook /home/emanon/Data/Projects/AI/ldc/plans/260714-1831-ldc-full-parity-linux-implementation/plan.md --tdd`
+`/ak:cook plans/260714-1831-ldc-full-parity-linux-implementation/plan.md --tdd`
 
 Execute phases sequentially and stop at any unresolved entry gate. AgentWiki publishing was skipped because no AgentWiki CLI or MCP tool was provided.

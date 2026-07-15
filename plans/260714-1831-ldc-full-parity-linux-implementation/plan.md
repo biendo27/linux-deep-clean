@@ -167,7 +167,7 @@ Key corrections standardized the token-bound VM guard, isolated providers behind
 
 After plan validation and adversarial review, execute sequentially with:
 
-`/ak:cook /home/emanon/Data/Projects/AI/ldc/plans/260714-1831-ldc-full-parity-linux-implementation/plan.md --tdd`
+`/ak:cook plans/260714-1831-ldc-full-parity-linux-implementation/plan.md --tdd`
 
 Implementation must stop at any unresolved decision/entry gate. Phase files are the executable contracts; this index does not authorize implementation shortcuts or a full-parity claim before Phase 11.
 
