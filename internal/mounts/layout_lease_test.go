@@ -52,7 +52,7 @@ func TestOpenTrustedLayoutBindsOneKindToTheHeldTrustedRoot(t *testing.T) {
 	}
 	duplicate, err := layout.duplicateWith(layoutInspectionSequence(testInspection(), testLayoutInspection()))
 	if err != nil {
-		t.Fatalf("layout.Duplicate() error = %v", err)
+		t.Fatalf("layout.DuplicateLayoutDescriptor() error = %v", err)
 	}
 	defer unix.Close(duplicate)
 	if flags, err := unix.FcntlInt(uintptr(duplicate), unix.F_GETFD, 0); err != nil || flags&unix.FD_CLOEXEC == 0 {
@@ -329,8 +329,8 @@ func TestLayoutLeaseLifecycleKeepsExplicitDuplicateOwned(t *testing.T) {
 	if err := nilLease.Close(); err != nil {
 		t.Fatalf("nil layout Close() error = %v", err)
 	}
-	if _, err := nilLease.Duplicate(); !errors.Is(err, ErrLeaseClosed) {
-		t.Fatalf("nil layout Duplicate() error = %v, want ErrLeaseClosed", err)
+	if _, err := nilLease.DuplicateLayoutDescriptor(); !errors.Is(err, ErrLeaseClosed) {
+		t.Fatalf("nil layout DuplicateLayoutDescriptor() error = %v, want ErrLeaseClosed", err)
 	}
 
 	root := openLayoutTestRoot(t)
@@ -366,7 +366,7 @@ func TestLayoutLeaseLifecycleKeepsExplicitDuplicateOwned(t *testing.T) {
 
 	duplicate, err := layout.duplicateWith(layoutInspectionSequence(testInspection(), testLayoutInspection()))
 	if err != nil {
-		t.Fatalf("layout.Duplicate() error = %v", err)
+		t.Fatalf("layout.DuplicateLayoutDescriptor() error = %v", err)
 	}
 	defer unix.Close(duplicate)
 
@@ -382,16 +382,16 @@ func TestLayoutLeaseLifecycleKeepsExplicitDuplicateOwned(t *testing.T) {
 	if _, err := unix.FcntlInt(uintptr(duplicate), unix.F_GETFD, 0); err != nil {
 		t.Fatalf("caller-owned duplicate after layout.Close() error = %v", err)
 	}
-	if _, err := layout.Duplicate(); !errors.Is(err, ErrLeaseClosed) {
-		t.Fatalf("layout.Duplicate() after Close error = %v, want ErrLeaseClosed", err)
+	if _, err := layout.DuplicateLayoutDescriptor(); !errors.Is(err, ErrLeaseClosed) {
+		t.Fatalf("layout.DuplicateLayoutDescriptor() after Close error = %v, want ErrLeaseClosed", err)
 	}
 
 	invalid := &LayoutLease{rootID: rootID, kind: LayoutPrivateState, fd: -1}
 	if err := invalid.Close(); err != nil {
 		t.Fatalf("invalid-descriptor layout Close() error = %v", err)
 	}
-	if _, err := invalid.Duplicate(); !errors.Is(err, ErrLeaseClosed) {
-		t.Fatalf("invalid-descriptor layout Duplicate() error = %v, want ErrLeaseClosed", err)
+	if _, err := invalid.DuplicateLayoutDescriptor(); !errors.Is(err, ErrLeaseClosed) {
+		t.Fatalf("invalid-descriptor layout DuplicateLayoutDescriptor() error = %v, want ErrLeaseClosed", err)
 	}
 }
 
@@ -416,8 +416,8 @@ func TestLayoutLeaseDuplicateFailsAfterItsTrustedRootCloses(t *testing.T) {
 	if err := root.Close(); err != nil {
 		t.Fatalf("close trusted root: %v", err)
 	}
-	if _, err := layout.Duplicate(); !errors.Is(err, ErrLeaseClosed) {
-		t.Fatalf("layout.Duplicate() after its root closes error = %v, want ErrLeaseClosed", err)
+	if _, err := layout.DuplicateLayoutDescriptor(); !errors.Is(err, ErrLeaseClosed) {
+		t.Fatalf("layout.DuplicateLayoutDescriptor() after its root closes error = %v, want ErrLeaseClosed", err)
 	}
 }
 

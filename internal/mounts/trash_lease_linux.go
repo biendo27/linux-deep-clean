@@ -25,6 +25,30 @@ const (
 	TrashPlacementTopShared TrashPlacement = "top_shared"
 )
 
+// TrashAnchorKind identifies the engine/helper-attested parent from which a
+// Freedesktop Trash layout must be reopened by literal child name. It is
+// topology evidence only: neither kind permits a caller to discover a HOME,
+// XDG directory, or filesystem top from a string path.
+type TrashAnchorKind string
+
+const (
+	// TrashAnchorHomeData is the trusted data-home directory whose literal
+	// Trash child is the home-filesystem Trash root.
+	TrashAnchorHomeData TrashAnchorKind = "home_data"
+	// TrashAnchorFilesystemTop is the trusted filesystem-top directory whose
+	// literal .Trash-$uid or .Trash child establishes a top-directory Trash.
+	TrashAnchorFilesystemTop TrashAnchorKind = "filesystem_top"
+)
+
+// TrashTopology records optional engine/helper-owned evidence required to
+// prove literal Freedesktop child relationships. A zero topology preserves
+// the existing pre-selector lease boundary for metadata-only callers; any
+// operation that needs a qualified layout must require a nonzero topology.
+type TrashTopology struct {
+	AnchorKind TrashAnchorKind
+	Anchor     LayoutExpectation
+}
+
 // TrashMetadataBasis controls only the serialized .trashinfo Path form. It
 // cannot be used to resolve a filesystem path.
 type TrashMetadataBasis string
@@ -51,9 +75,12 @@ type TrashMetadataMapping struct {
 // this authority boundary.
 //
 // The bundle is intentionally internal to mounts except for the trusted
-// opener boundary. A TrashLease only lends duplicated files/info descriptors
-// to linuxfs through Duplicate.
+// opener boundary. A legacy pre-selector TrashLease lends duplicated
+// files/info descriptors to linuxfs through DuplicateTrashDescriptorPair; a
+// topology-qualified lease can instead lend the complete fixed role set
+// through DuplicateTrashTopologyDescriptorSet.
 type TrashDescriptors struct {
+	Anchor    int
 	TrashRoot int
 	Files     int
 	Info      int
@@ -73,7 +100,23 @@ type TrashDescriptors struct {
 // later by the fixed authority placement. Every other negative descriptor and
 // any aliased input descriptor is rejected before it can become authority.
 func NewTrashDescriptors(trashRoot, files, info, sharedTop int) (TrashDescriptors, error) {
-	raw := []int{trashRoot, files, info, sharedTop}
+	return newTrashDescriptors(-1, trashRoot, files, info, sharedTop)
+}
+
+// NewTrashTopologyDescriptors transfers an engine/helper-opened topology
+// anchor together with the fixed Trash roles. Unlike NewTrashDescriptors, it
+// requires a real anchor descriptor so linuxfs can later prove literal FDO
+// child relationships without reconstructing any location from a path.
+func NewTrashTopologyDescriptors(anchor, trashRoot, files, info, sharedTop int) (TrashDescriptors, error) {
+	if anchor < 0 {
+		closeOwnedTrashDescriptors([]int{anchor, trashRoot, files, info, sharedTop})
+		return emptyTrashDescriptors(), fmt.Errorf("%w: Trash topology anchor is missing", ErrInvalidAuthority)
+	}
+	return newTrashDescriptors(anchor, trashRoot, files, info, sharedTop)
+}
+
+func newTrashDescriptors(anchor, trashRoot, files, info, sharedTop int) (TrashDescriptors, error) {
+	raw := []int{anchor, trashRoot, files, info, sharedTop}
 	for index, fd := range raw {
 		if fd < -1 {
 			closeOwnedTrashDescriptors(raw)
@@ -90,7 +133,7 @@ func NewTrashDescriptors(trashRoot, files, info, sharedTop int) (TrashDescriptor
 		}
 	}
 
-	normalized := []int{-1, -1, -1, -1}
+	normalized := []int{-1, -1, -1, -1, -1}
 	for index, fd := range raw {
 		if fd < 0 {
 			continue
@@ -114,16 +157,17 @@ func NewTrashDescriptors(trashRoot, files, info, sharedTop int) (TrashDescriptor
 	}
 
 	return TrashDescriptors{
-		TrashRoot:  normalized[0],
-		Files:      normalized[1],
-		Info:       normalized[2],
-		SharedTop:  normalized[3],
+		Anchor:     normalized[0],
+		TrashRoot:  normalized[1],
+		Files:      normalized[2],
+		Info:       normalized[3],
+		SharedTop:  normalized[4],
 		normalized: true,
 	}, nil
 }
 
 func emptyTrashDescriptors() TrashDescriptors {
-	return TrashDescriptors{TrashRoot: -1, Files: -1, Info: -1, SharedTop: -1}
+	return TrashDescriptors{Anchor: -1, TrashRoot: -1, Files: -1, Info: -1, SharedTop: -1}
 }
 
 func closeOwnedTrashDescriptors(fds []int) {
@@ -149,6 +193,7 @@ func (descriptors *TrashDescriptors) Close() error {
 	var closeErr error
 	closed := make(map[int]struct{}, 4)
 	for _, entry := range []*int{
+		&descriptors.Anchor,
 		&descriptors.TrashRoot,
 		&descriptors.Files,
 		&descriptors.Info,
@@ -186,6 +231,12 @@ func (descriptors TrashDescriptors) validate(placement TrashPlacement) error {
 		{name: "Trash files", fd: descriptors.Files},
 		{name: "Trash info", fd: descriptors.Info},
 	}
+	if descriptors.Anchor != -1 {
+		roles = append(roles, struct {
+			name string
+			fd   int
+		}{name: "Trash topology anchor", fd: descriptors.Anchor})
+	}
 	if placement == TrashPlacementTopShared {
 		roles = append(roles, struct {
 			name string
@@ -204,6 +255,16 @@ func (descriptors TrashDescriptors) validate(placement TrashPlacement) error {
 			return fmt.Errorf("%w: %s descriptor aliases %s", ErrInvalidAuthority, role.name, previous)
 		}
 		seen[role.fd] = role.name
+	}
+	return nil
+}
+
+func (descriptors TrashDescriptors) validateTopology(placement TrashPlacement) error {
+	if err := descriptors.validate(placement); err != nil {
+		return err
+	}
+	if descriptors.Anchor < 3 {
+		return fmt.Errorf("%w: topology-qualified Trash bundle has no anchor descriptor", ErrInvalidAuthority)
 	}
 	return nil
 }
@@ -232,6 +293,7 @@ type TrashAuthority struct {
 	Placement TrashPlacement
 	OwnerUID  uint32
 	Metadata  TrashMetadataMapping
+	Topology  TrashTopology
 	Open      TrashOpener
 	Expected  TrashLayoutExpectation
 }
@@ -258,6 +320,30 @@ func (authority TrashAuthority) validate(requestedRoot domain.TrustedRootID) err
 	if err := authority.Expected.validate(authority.Placement, authority.OwnerUID); err != nil {
 		return err
 	}
+	if err := authority.Topology.validate(authority.Placement); err != nil {
+		return err
+	}
+	if authority.Topology.configured() {
+		if err := validateTrashTopologyBinding(authority.Topology, authority.Expected); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateTrashTopologyBinding(topology TrashTopology, expected TrashLayoutExpectation) error {
+	anchor := topology.Anchor
+	if !sameMountRecord(anchor.Mount, expected.TrashRoot.Mount) ||
+		anchor.Namespace != expected.TrashRoot.Namespace ||
+		anchor.Device != expected.TrashRoot.Device {
+		return fmt.Errorf("%w: Trash topology anchor is not on the Trash root mount", ErrInvalidAuthority)
+	}
+	if anchor.Inode == expected.TrashRoot.Inode ||
+		anchor.Inode == expected.Files.Inode ||
+		anchor.Inode == expected.Info.Inode ||
+		(expected.HasSharedTop && anchor.Inode == expected.SharedTop.Inode) {
+		return fmt.Errorf("%w: Trash topology anchor aliases a protected Trash role", ErrInvalidAuthority)
+	}
 	return nil
 }
 
@@ -268,6 +354,57 @@ func (placement TrashPlacement) validate() error {
 	default:
 		return fmt.Errorf("%w: unknown Trash placement %q", ErrInvalidAuthority, placement)
 	}
+}
+
+func (kind TrashAnchorKind) validate() error {
+	switch kind {
+	case TrashAnchorHomeData, TrashAnchorFilesystemTop:
+		return nil
+	default:
+		return fmt.Errorf("%w: unknown Trash topology anchor kind %q", ErrInvalidAuthority, kind)
+	}
+}
+
+func (topology TrashTopology) configured() bool {
+	return topology.AnchorKind != ""
+}
+
+func (topology TrashTopology) validate(placement TrashPlacement) error {
+	if !topology.configured() {
+		if !isZeroTrashLayoutExpectation(topology.Anchor) {
+			return fmt.Errorf("%w: Trash topology anchor evidence requires an anchor kind", ErrInvalidAuthority)
+		}
+		return nil
+	}
+	if err := topology.AnchorKind.validate(); err != nil {
+		return err
+	}
+	if err := topology.Anchor.validate(); err != nil {
+		return fmt.Errorf("Trash topology anchor: %w", err)
+	}
+	switch placement {
+	case TrashPlacementHome:
+		if topology.AnchorKind != TrashAnchorHomeData {
+			return fmt.Errorf("%w: home Trash requires a data-home topology anchor", ErrInvalidAuthority)
+		}
+	case TrashPlacementTopUser, TrashPlacementTopShared:
+		if topology.AnchorKind != TrashAnchorFilesystemTop {
+			return fmt.Errorf("%w: top-directory Trash requires a filesystem-top topology anchor", ErrInvalidAuthority)
+		}
+	default:
+		return fmt.Errorf("%w: unknown Trash placement %q", ErrInvalidAuthority, placement)
+	}
+	return nil
+}
+
+func isZeroTrashLayoutExpectation(expectation LayoutExpectation) bool {
+	return expectation.Namespace == (MountNamespace{}) &&
+		expectation.Device == (DeviceIdentity{}) &&
+		expectation.Inode == 0 &&
+		expectation.UID == 0 &&
+		expectation.GID == 0 &&
+		expectation.Mode == 0 &&
+		expectation.Mount == (MountRecord{})
 }
 
 func (basis TrashMetadataBasis) validate() error {
@@ -401,15 +538,63 @@ func (pair *TrashDescriptorPair) Close() error {
 	return closeErr
 }
 
+// TrashTopologyDescriptorSet is the only full topology handoff from a
+// topology-qualified TrashLease to linuxfs. It carries CLOEXEC duplicates of
+// engine/helper-selected descriptors, never pathnames. The normal pair handoff
+// remains available for metadata-only pre-selector users.
+type TrashTopologyDescriptorSet struct {
+	AnchorFD    int
+	TrashRootFD int
+	FilesFD     int
+	InfoFD      int
+	SharedTopFD int
+}
+
+// EmptyTrashTopologyDescriptorSet returns a released descriptor set. It is
+// useful to an opener that must return a descriptor-shaped value with an
+// error, while preserving the invariant that no nonnegative descriptor is
+// implicitly owned by the caller.
+func EmptyTrashTopologyDescriptorSet() TrashTopologyDescriptorSet {
+	return TrashTopologyDescriptorSet{AnchorFD: -1, TrashRootFD: -1, FilesFD: -1, InfoFD: -1, SharedTopFD: -1}
+}
+
+// Close releases every descriptor in the topology handoff. It is safe for a
+// partially populated set and ignores reserved descriptors because production
+// authority constructors normalize ownership above standard streams.
+func (set *TrashTopologyDescriptorSet) Close() error {
+	if set == nil {
+		return nil
+	}
+	var closeErr error
+	closed := make(map[int]struct{}, 5)
+	for _, entry := range []*int{&set.AnchorFD, &set.TrashRootFD, &set.FilesFD, &set.InfoFD, &set.SharedTopFD} {
+		fd := *entry
+		*entry = -1
+		if fd < 3 {
+			continue
+		}
+		if _, alreadyClosed := closed[fd]; alreadyClosed {
+			continue
+		}
+		closed[fd] = struct{}{}
+		if err := unix.Close(fd); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	return closeErr
+}
+
 // TrashLease owns a qualified Trash descriptor bundle. It rechecks the root,
-// all protected roles, and their exact mount binding before it lends files/info
-// duplicates to linuxfs. Metadata context remains data-only.
+// all protected roles, and their exact mount binding before it lends either a
+// legacy files/info pair or the full topology role set to linuxfs. Metadata
+// context remains data-only.
 type TrashLease struct {
 	root      *RootLease
 	rootID    domain.TrustedRootID
 	placement TrashPlacement
 	ownerUID  uint32
 	metadata  TrashMetadataMapping
+	topology  TrashTopology
 	expected  TrashLayoutExpectation
 
 	mu          sync.Mutex
@@ -431,6 +616,16 @@ func (lease *TrashLease) Placement() TrashPlacement {
 		return ""
 	}
 	return lease.placement
+}
+
+// AnchorKind reports whether this lease contains engine/helper-attested FDO
+// topology evidence. An empty value means the lease is intentionally limited
+// to the legacy pre-selector metadata boundary.
+func (lease *TrashLease) AnchorKind() TrashAnchorKind {
+	if lease == nil {
+		return ""
+	}
+	return lease.topology.AnchorKind
 }
 
 // MetadataBasis reports the serialization-only Path basis.
@@ -476,11 +671,120 @@ func (lease *TrashLease) MetadataPathFor(sourceRelative pathbytes.BytePath) (pat
 	return mapped, nil
 }
 
-// Duplicate gives linuxfs requalified CLOEXEC duplicates of the fixed files
-// and info directories. Architecture rules prohibit every other production
-// package from calling it.
-func (lease *TrashLease) Duplicate() (TrashDescriptorPair, error) {
+// DuplicateTrashDescriptorPair gives linuxfs requalified CLOEXEC duplicates
+// of the fixed files and info directories. Its capability-specific name lets
+// architecture rules prohibit every other production package, including
+// interface-mediated callers, from borrowing raw descriptors.
+func (lease *TrashLease) DuplicateTrashDescriptorPair() (TrashDescriptorPair, error) {
 	return lease.duplicateWith(InspectMount)
+}
+
+// DuplicateTrashTopologyDescriptorSet gives linuxfs requalified CLOEXEC
+// duplicates of every descriptor needed to prove literal Freedesktop Trash
+// topology. It is unavailable for a legacy pre-selector lease; callers must
+// treat that as unsupported rather than attempting path-based discovery.
+// Its capability-specific name also makes interface-mediated borrowing
+// rejectable at the architecture boundary.
+func (lease *TrashLease) DuplicateTrashTopologyDescriptorSet() (TrashTopologyDescriptorSet, error) {
+	return lease.duplicateTopologyWith(InspectMount)
+}
+
+func (lease *TrashLease) duplicateTopologyWith(inspect rootInspector) (TrashTopologyDescriptorSet, error) {
+	return lease.duplicateTopologyWithFcntl(inspect, func(fd int) (int, error) {
+		return unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 3)
+	})
+}
+
+func (lease *TrashLease) duplicateTopologyWithFcntl(inspect rootInspector, duplicate func(int) (int, error)) (TrashTopologyDescriptorSet, error) {
+	set := EmptyTrashTopologyDescriptorSet()
+	if lease == nil {
+		return set, ErrLeaseClosed
+	}
+	if inspect == nil || duplicate == nil {
+		return set, fmt.Errorf("%w: missing Trash topology requalification dependency", ErrInvalidAuthority)
+	}
+
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if lease.closed {
+		return set, ErrLeaseClosed
+	}
+	if !lease.topology.configured() {
+		return set, fmt.Errorf("%w: trusted Trash lease has no topology anchor", ErrUnsupported)
+	}
+	if err := lease.requalifyLocked(inspect); err != nil {
+		return set, err
+	}
+
+	roles := []struct {
+		name string
+		fd   int
+		out  *int
+	}{
+		{name: "topology anchor", fd: lease.descriptors.Anchor, out: &set.AnchorFD},
+		{name: "Trash root", fd: lease.descriptors.TrashRoot, out: &set.TrashRootFD},
+		{name: "Trash files", fd: lease.descriptors.Files, out: &set.FilesFD},
+		{name: "Trash info", fd: lease.descriptors.Info, out: &set.InfoFD},
+	}
+	if lease.placement == TrashPlacementTopShared {
+		roles = append(roles, struct {
+			name string
+			fd   int
+			out  *int
+		}{name: "shared Trash parent", fd: lease.descriptors.SharedTop, out: &set.SharedTopFD})
+	}
+	for _, role := range roles {
+		duplicated, err := duplicate(role.fd)
+		if err != nil {
+			lease.closeRejectedTopologyDuplicate(duplicated, set)
+			_ = set.Close()
+			return EmptyTrashTopologyDescriptorSet(), fmt.Errorf("duplicate trusted Trash %s directory: %w", role.name, err)
+		}
+		if err := lease.validateTopologyDuplicateDescriptor(duplicated, role.name, set); err != nil {
+			lease.closeRejectedTopologyDuplicate(duplicated, set)
+			_ = set.Close()
+			return EmptyTrashTopologyDescriptorSet(), err
+		}
+		*role.out = duplicated
+	}
+	return set, nil
+}
+
+func (lease *TrashLease) validateTopologyDuplicateDescriptor(fd int, role string, set TrashTopologyDescriptorSet) error {
+	if fd < 3 {
+		return fmt.Errorf("%w: duplicate trusted Trash %s directory returned reserved descriptor %d", ErrInvalidAuthority, role, fd)
+	}
+	for _, held := range []int{lease.descriptors.Anchor, lease.descriptors.TrashRoot, lease.descriptors.Files, lease.descriptors.Info, lease.descriptors.SharedTop} {
+		if fd == held {
+			return fmt.Errorf("%w: duplicate trusted Trash %s directory aliases an authority descriptor", ErrInvalidAuthority, role)
+		}
+	}
+	for _, duplicated := range []int{set.AnchorFD, set.TrashRootFD, set.FilesFD, set.InfoFD, set.SharedTopFD} {
+		if fd == duplicated {
+			return fmt.Errorf("%w: duplicate trusted Trash %s directory aliases a descriptor in the handoff", ErrInvalidAuthority, role)
+		}
+	}
+	if err := validateLeasedDirectoryFD(fd, "duplicated Trash "+role); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (lease *TrashLease) closeRejectedTopologyDuplicate(fd int, set TrashTopologyDescriptorSet) {
+	if fd < 3 {
+		return
+	}
+	for _, held := range []int{lease.descriptors.Anchor, lease.descriptors.TrashRoot, lease.descriptors.Files, lease.descriptors.Info, lease.descriptors.SharedTop} {
+		if fd == held {
+			return
+		}
+	}
+	for _, duplicated := range []int{set.AnchorFD, set.TrashRootFD, set.FilesFD, set.InfoFD, set.SharedTopFD} {
+		if fd == duplicated {
+			return
+		}
+	}
+	_ = unix.Close(fd)
 }
 
 func (lease *TrashLease) duplicateWith(inspect rootInspector) (TrashDescriptorPair, error) {
@@ -562,6 +866,22 @@ func (lease *TrashLease) requalifyLocked(inspect rootInspector) error {
 		if err := checkTrashDescriptor(lease.descriptors.SharedTop, "shared Trash parent", lease.expected.SharedTop, rootInspection, inspect); err != nil {
 			return err
 		}
+	}
+	if lease.topology.configured() {
+		if err := lease.topology.validate(lease.placement); err != nil {
+			return err
+		}
+		if err := validateTrashTopologyBinding(lease.topology, lease.expected); err != nil {
+			return err
+		}
+		if err := lease.descriptors.validateTopology(lease.placement); err != nil {
+			return err
+		}
+		if err := checkTrashDescriptor(lease.descriptors.Anchor, "Trash topology anchor", lease.topology.Anchor, rootInspection, inspect); err != nil {
+			return err
+		}
+	} else if lease.descriptors.Anchor != -1 {
+		return fmt.Errorf("%w: legacy Trash lease carries an unbound topology anchor", ErrInvalidAuthority)
 	}
 	return nil
 }
@@ -670,6 +990,16 @@ func openTrustedTrashWith(registry TrashRegistry, root *RootLease, inspect rootI
 	if err := descriptors.validate(authority.Placement); err != nil {
 		return nil, err
 	}
+	if authority.Topology.configured() {
+		if err := descriptors.validateTopology(authority.Placement); err != nil {
+			return nil, err
+		}
+		if err := checkTrashDescriptor(descriptors.Anchor, "Trash topology anchor", authority.Topology.Anchor, rootInspection, inspect); err != nil {
+			return nil, err
+		}
+	} else if descriptors.Anchor != -1 {
+		return nil, fmt.Errorf("%w: legacy Trash authority returned an unbound topology anchor", ErrInvalidAuthority)
+	}
 	if err := checkTrashDescriptor(descriptors.TrashRoot, "Trash root", authority.Expected.TrashRoot, rootInspection, inspect); err != nil {
 		return nil, err
 	}
@@ -690,6 +1020,7 @@ func openTrustedTrashWith(registry TrashRegistry, root *RootLease, inspect rootI
 		placement:   authority.Placement,
 		ownerUID:    authority.OwnerUID,
 		metadata:    authority.Metadata,
+		topology:    authority.Topology,
 		expected:    authority.Expected,
 		descriptors: descriptors,
 	}

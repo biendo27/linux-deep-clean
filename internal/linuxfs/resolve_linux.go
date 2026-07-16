@@ -191,7 +191,7 @@ func ResolveParent(ctx context.Context, root *mounts.RootLease, path pathbytes.B
 	if root == nil {
 		return nil, "", fmt.Errorf("%w: trusted root lease is nil", ErrDrifted)
 	}
-	rootFD, err := root.Duplicate()
+	rootFD, err := root.DuplicateRootDescriptor()
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: duplicate trusted root: %v", ErrDrifted, err)
 	}

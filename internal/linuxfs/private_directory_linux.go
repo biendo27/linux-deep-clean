@@ -22,7 +22,7 @@ const privateDirectoryMask = baselineFilesystemMask
 type privateDirectorySource interface {
 	RootID() domain.TrustedRootID
 	Kind() mounts.LayoutKind
-	Duplicate() (int, error)
+	DuplicateLayoutDescriptor() (int, error)
 }
 
 var _ privateDirectorySource = (*mounts.LayoutLease)(nil)
@@ -62,7 +62,7 @@ func openPrivateDirectoryWithSource(source privateDirectorySource) (*PrivateDire
 	if !isPrivateLayoutKind(kind) {
 		return nil, fmt.Errorf("%w: layout kind %q is not an executor-private directory", ErrUnsupported, kind)
 	}
-	fd, err := source.Duplicate()
+	fd, err := source.DuplicateLayoutDescriptor()
 	if err != nil {
 		return nil, classifyPrivateDirectorySourceFailure("duplicate trusted private layout", err)
 	}
@@ -141,7 +141,7 @@ func (lease *PrivateDirectoryLease) duplicateLocked() (int, error) {
 	if err := lease.recheckLocked(); err != nil {
 		return -1, err
 	}
-	fd, err := lease.source.Duplicate()
+	fd, err := lease.source.DuplicateLayoutDescriptor()
 	if err != nil {
 		if fd >= 0 {
 			_ = unix.Close(fd)

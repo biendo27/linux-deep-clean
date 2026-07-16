@@ -11,9 +11,10 @@ import (
 )
 
 // RootLease owns one qualified trusted-root descriptor. Downstream rooted
-// safety leases can explicitly obtain a CLOEXEC duplicate with Duplicate; that
-// duplicate is caller-owned and must be closed by the downstream lease. The
-// root lease itself never makes an untracked duplicate.
+// safety leases can explicitly obtain a CLOEXEC duplicate with
+// DuplicateRootDescriptor; that duplicate is caller-owned and must be closed
+// by the downstream lease. The root lease itself never makes an untracked
+// duplicate.
 type RootLease struct {
 	rootID   domain.TrustedRootID
 	expected RootExpectation
@@ -51,11 +52,13 @@ func (lease *RootLease) withFD(operation func(int) error) error {
 	return operation(lease.fd)
 }
 
-// Duplicate returns a CLOEXEC duplicate of the held root descriptor for a
-// downstream rooted safety lease such as linuxfs.ParentLease. The caller owns
-// the returned descriptor and must close it on every path. Duplicate refuses
-// a closed lease, preventing new authority from being derived after Close.
-func (lease *RootLease) Duplicate() (int, error) {
+// DuplicateRootDescriptor returns a CLOEXEC duplicate of the held root
+// descriptor for a downstream rooted safety lease such as
+// linuxfs.ParentLease. The caller owns the returned descriptor and must close
+// it on every path. It refuses a closed lease, preventing new authority from
+// being derived after Close. Its capability-specific name lets architecture
+// checks reject interface-mediated raw descriptor borrowing outside linuxfs.
+func (lease *RootLease) DuplicateRootDescriptor() (int, error) {
 	if lease == nil {
 		return -1, ErrLeaseClosed
 	}

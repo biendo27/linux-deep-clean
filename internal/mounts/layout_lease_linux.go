@@ -151,10 +151,11 @@ func (lease *LayoutLease) Kind() LayoutKind {
 	return lease.kind
 }
 
-// Duplicate gives the descriptor-rooted linuxfs layer one owned CLOEXEC
-// duplicate after the trusted root and layout both requalify. Architecture
-// rules prohibit other packages from calling it.
-func (lease *LayoutLease) Duplicate() (int, error) {
+// DuplicateLayoutDescriptor gives the descriptor-rooted linuxfs layer one
+// owned CLOEXEC duplicate after the trusted root and layout both requalify.
+// Its capability-specific name lets architecture rules prohibit every other
+// package, including interface-mediated callers, from borrowing it.
+func (lease *LayoutLease) DuplicateLayoutDescriptor() (int, error) {
 	return lease.duplicateWith(InspectMount)
 }
 

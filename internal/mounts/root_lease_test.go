@@ -189,9 +189,9 @@ func TestOpenTrustedRootClosesLeaseAndTracksExplicitDuplicateOwnership(t *testin
 	if err := lease.withFD(nil); !errors.Is(err, ErrInvalidAuthority) {
 		t.Fatalf("lease.withFD(nil) error = %v, want ErrInvalidAuthority", err)
 	}
-	duplicateFD, err := lease.Duplicate()
+	duplicateFD, err := lease.DuplicateRootDescriptor()
 	if err != nil {
-		t.Fatalf("lease.Duplicate() error = %v", err)
+		t.Fatalf("lease.DuplicateRootDescriptor() error = %v", err)
 	}
 	defer unix.Close(duplicateFD)
 	if flags, err := unix.FcntlInt(uintptr(duplicateFD), unix.F_GETFD, 0); err != nil || flags&unix.FD_CLOEXEC == 0 {
@@ -210,8 +210,8 @@ func TestOpenTrustedRootClosesLeaseAndTracksExplicitDuplicateOwnership(t *testin
 	if _, err := unix.FcntlInt(uintptr(duplicateFD), unix.F_GETFD, 0); err != nil {
 		t.Fatalf("explicit caller-owned duplicate after lease Close error = %v", err)
 	}
-	if _, err := lease.Duplicate(); !errors.Is(err, ErrLeaseClosed) {
-		t.Fatalf("lease.Duplicate() after Close error = %v, want ErrLeaseClosed", err)
+	if _, err := lease.DuplicateRootDescriptor(); !errors.Is(err, ErrLeaseClosed) {
+		t.Fatalf("lease.DuplicateRootDescriptor() after Close error = %v, want ErrLeaseClosed", err)
 	}
 	if err := lease.withFD(func(int) error { return nil }); !errors.Is(err, ErrLeaseClosed) {
 		t.Fatalf("lease.withFD() after Close error = %v, want ErrLeaseClosed", err)
@@ -304,8 +304,8 @@ func TestRootLeaseNilAndInvalidFDBehavior(t *testing.T) {
 	if err := nilLease.withFD(func(int) error { return nil }); !errors.Is(err, ErrLeaseClosed) {
 		t.Fatalf("nil lease withFD() error = %v, want ErrLeaseClosed", err)
 	}
-	if _, err := nilLease.Duplicate(); !errors.Is(err, ErrLeaseClosed) {
-		t.Fatalf("nil lease Duplicate() error = %v, want ErrLeaseClosed", err)
+	if _, err := nilLease.DuplicateRootDescriptor(); !errors.Is(err, ErrLeaseClosed) {
+		t.Fatalf("nil lease DuplicateRootDescriptor() error = %v, want ErrLeaseClosed", err)
 	}
 
 	lease := &RootLease{rootID: testRootID(t), fd: -1}

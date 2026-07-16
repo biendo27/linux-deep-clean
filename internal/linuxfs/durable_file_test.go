@@ -1196,7 +1196,7 @@ func (source *testPrivateDirectorySource) Kind() mounts.LayoutKind {
 	return source.kind
 }
 
-func (source *testPrivateDirectorySource) Duplicate() (int, error) {
+func (source *testPrivateDirectorySource) DuplicateLayoutDescriptor() (int, error) {
 	if source == nil || source.duplicate == nil {
 		return -1, mounts.ErrLeaseClosed
 	}

@@ -42,30 +42,48 @@ pre-selector boundary. An engine/helper opener transfers a fixed Trash-root,
 `NewTrashDescriptors`; that constructor normalizes opener-owned descriptors
 away from 0, 1, and 2 before the bundle becomes authority. The lease
 requalifies descriptor identities, ownership, modes, and mount binding before
-it lends only duplicated `files` and `info` descriptors to `linuxfs`.
+a legacy pre-selector lease lends a duplicated `files`/`info` pair to
+`linuxfs`.
 
-This is deliberately not a Freedesktop Trash selector or topology proof. It
-does not discover Home versus `.Trash/$uid` versus `.Trash-$uid`, prove that
-`files` and `info` are literal children of the selected root, or prove a
-shared-parent UID layout. A future engine/helper composition must make those
-checks while opening the fixed bundle; absent that proof, a root is
-unsupported rather than inferred from a pathname or environment value.
+Operations that need a literal Freedesktop layout require additional trusted
+topology evidence. The engine/helper must supply a `TrashTopology` anchor and
+transfer that anchor through `NewTrashTopologyDescriptors`; a legacy bundle
+cannot carry an unbound anchor. A topology-qualified lease may lend the full
+anchor/root/`files`/`info`/(shared-parent) descriptor set only to `linuxfs`.
+`trash.ValidateTrashLayout` and
+`trash.SelectTrashRoot` then require `linuxfs` to reopen fixed literal child
+names with all required `openat2` constraints and compare the resulting
+descriptor identities:
 
-`linuxfs.OpenTrashDirectories` and `PublishTrashInfoDurable` can now publish
-one metadata record beneath such a requalified `info` descriptor. Publication
-requires a bounded `ldc-` plus lowercase-hex token profile, uses no-follow and
-no-replace creation, writes and syncs the record, syncs the directory, and
-reopens the name to verify its identity and bytes. The token check prevents a
-foreign or arbitrary record name at this boundary; it is not token generation,
-reservation, pair ownership, or a durable intent record. Once creation may
-have succeeded, an error retains the record for later reconciliation rather
-than attempting unsafe cleanup.
+- a home-data anchor must contain `Trash`;
+- a filesystem-top anchor must contain `.Trash-$uid` for a top-user layout;
+- a filesystem-top anchor must contain sticky `.Trash`, whose literal `$uid`
+  child is the top-shared layout; and
+- every selected Trash root must contain literal `files` and `info` children.
+
+The proof checks same-mount binding, distinct directory identities, private
+owner/mode requirements for the user root and its `files`/`info` children, and
+the shared parent's sticky bit. It is repeated whenever a qualified pair is
+borrowed and again after metadata publication. It never discovers a home,
+filesystem top, UID, or path from caller input. Missing or drifted topology is
+unsupported/drifted rather than inferred or repaired. `linuxfs.OpenTrashDirectories`
+remains the deliberately weaker metadata-only pre-selector API and must not
+be used for a content move or restoration.
+
+`linuxfs.PublishTrashInfoDurable` can publish one metadata record beneath a
+requalified `info` descriptor. Publication requires a bounded `ldc-` plus
+lowercase-hex token profile, uses no-follow and no-replace creation, writes and
+syncs the record, syncs the directory, and reopens the name to verify its
+identity and bytes. The token check prevents a foreign or arbitrary record
+name at this boundary; it is not token generation, reservation, pair ownership,
+or a durable intent record. Once creation may have succeeded, an error retains
+the record for later reconciliation rather than attempting unsafe cleanup.
 
 No current API moves source content into `files`, restores content, removes
 metadata, reconciles an orphan, or proves a metadata/content pair. Those
-operations remain blocked on the FDO selector, one-shot source-bound token
-reservation, durable intent/reconciliation records, and descriptor-rooted
-no-replace move and restore primitives.
+operations remain blocked on one-shot source-bound token reservation, durable
+intent/reconciliation records, and descriptor-rooted no-replace move and
+restore primitives.
 
 ## Intended Trash ordering
 

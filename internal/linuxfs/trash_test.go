@@ -387,7 +387,7 @@ func (source *testTrashDirectorySource) RootID() domain.TrustedRootID {
 	return source.rootID
 }
 
-func (source *testTrashDirectorySource) Duplicate() (mounts.TrashDescriptorPair, error) {
+func (source *testTrashDirectorySource) DuplicateTrashDescriptorPair() (mounts.TrashDescriptorPair, error) {
 	if source == nil || source.duplicate == nil {
 		return mounts.TrashDescriptorPair{FilesFD: -1, InfoFD: -1}, mounts.ErrLeaseClosed
 	}

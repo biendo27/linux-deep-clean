@@ -133,60 +133,114 @@ func mutateValue(file os.File) { _, _ = file.Write(nil) }
 	}
 }
 
-func TestRootLeaseDuplicateTrackingRequiresMountsRootLease(t *testing.T) {
-	const mountsImportPath = "example.test/project/internal/mounts"
+func TestRootLeaseRawDescriptorBorrowIsReserved(t *testing.T) {
 	file, err := parser.ParseFile(token.NewFileSet(), "root_lease.go", strings.NewReader(`package safety
 import mounts "example.test/project/internal/mounts"
-func duplicate(root *mounts.RootLease) { _, _ = root.Duplicate() }
+func duplicate(root *mounts.RootLease) { _, _ = root.DuplicateRootDescriptor() }
 `), 0)
 	if err != nil {
 		t.Fatalf("parse source: %v", err)
 	}
 
 	function := functionDeclarationNamed(t, file, "duplicate")
-	selector := functionSelectorNamed(t, function.Body, "Duplicate")
-	aliases := map[string]string{"mounts": mountsImportPath}
-	variables := mountsRootLeaseVariablesForScope(functionParameters(function.Type), function.Body, aliases, mountsImportPath)
-	if !isTrackedMountsRootLeaseReceiver(selector.X, variables, aliases, mountsImportPath) {
-		t.Error("mounts.RootLease.Duplicate receiver is not detected")
+	selector := functionSelectorNamed(t, function.Body, "DuplicateRootDescriptor")
+	if !isForbiddenRawLeaseDescriptorBorrow(selector) {
+		t.Error("mounts.RootLease.DuplicateRootDescriptor is not reserved")
 	}
 }
 
-func TestLayoutLeaseDuplicateTrackingRequiresMountsLayoutLease(t *testing.T) {
-	const mountsImportPath = "example.test/project/internal/mounts"
+func TestLayoutLeaseRawDescriptorBorrowIsReserved(t *testing.T) {
 	file, err := parser.ParseFile(token.NewFileSet(), "layout_lease.go", strings.NewReader(`package safety
 import mounts "example.test/project/internal/mounts"
-func duplicate(layout *mounts.LayoutLease) { _, _ = layout.Duplicate() }
+func duplicate(layout *mounts.LayoutLease) { _, _ = layout.DuplicateLayoutDescriptor() }
 `), 0)
 	if err != nil {
 		t.Fatalf("parse layout lease source: %v", err)
 	}
 
 	function := functionDeclarationNamed(t, file, "duplicate")
-	selector := functionSelectorNamed(t, function.Body, "Duplicate")
-	aliases := map[string]string{"mounts": mountsImportPath}
-	variables := mountsLayoutLeaseVariablesForScope(functionParameters(function.Type), function.Body, aliases, mountsImportPath)
-	if !isTrackedMountsLayoutLeaseReceiver(selector.X, variables, aliases, mountsImportPath) {
-		t.Error("mounts.LayoutLease.Duplicate receiver is not detected")
+	selector := functionSelectorNamed(t, function.Body, "DuplicateLayoutDescriptor")
+	if !isForbiddenRawLeaseDescriptorBorrow(selector) {
+		t.Error("mounts.LayoutLease.DuplicateLayoutDescriptor is not reserved")
 	}
 }
 
-func TestTrashLeaseDuplicateTrackingRequiresMountsTrashLease(t *testing.T) {
-	const mountsImportPath = "example.test/project/internal/mounts"
+func TestTrashLeaseRawDescriptorBorrowIsReserved(t *testing.T) {
 	file, err := parser.ParseFile(token.NewFileSet(), "trash_lease.go", strings.NewReader(`package safety
 import mounts "example.test/project/internal/mounts"
-func duplicate(trash *mounts.TrashLease) { _, _ = trash.Duplicate() }
+func duplicate(trash *mounts.TrashLease) { _, _ = trash.DuplicateTrashDescriptorPair() }
 `), 0)
 	if err != nil {
 		t.Fatalf("parse trash lease source: %v", err)
 	}
 
 	function := functionDeclarationNamed(t, file, "duplicate")
-	selector := functionSelectorNamed(t, function.Body, "Duplicate")
-	aliases := map[string]string{"mounts": mountsImportPath}
-	variables := mountsTrashLeaseVariablesForScope(functionParameters(function.Type), function.Body, aliases, mountsImportPath)
-	if !isTrackedMountsTrashLeaseReceiver(selector.X, variables, aliases, mountsImportPath) {
-		t.Error("mounts.TrashLease.Duplicate receiver is not detected")
+	selector := functionSelectorNamed(t, function.Body, "DuplicateTrashDescriptorPair")
+	if !isForbiddenRawLeaseDescriptorBorrow(selector) {
+		t.Error("mounts.TrashLease.DuplicateTrashDescriptorPair is not reserved")
+	}
+}
+
+func TestTrashLeaseTopologyRawDescriptorBorrowIsReserved(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "trash_topology_lease.go", strings.NewReader(`package safety
+import mounts "example.test/project/internal/mounts"
+func duplicate(trash *mounts.TrashLease) { _, _ = trash.DuplicateTrashTopologyDescriptorSet() }
+`), 0)
+	if err != nil {
+		t.Fatalf("parse Trash topology lease source: %v", err)
+	}
+
+	function := functionDeclarationNamed(t, file, "duplicate")
+	selector := functionSelectorNamed(t, function.Body, "DuplicateTrashTopologyDescriptorSet")
+	if !isForbiddenRawLeaseDescriptorBorrow(selector) {
+		t.Error("mounts.TrashLease.DuplicateTrashTopologyDescriptorSet is not reserved")
+	}
+}
+
+func TestRawLeaseDescriptorBorrowRejectsInterfaceReceivers(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "lease_interfaces.go", strings.NewReader(`package safety
+import mounts "example.test/project/internal/mounts"
+type rootSource interface {
+	DuplicateRootDescriptor() (int, error)
+}
+type layoutSource interface {
+	DuplicateLayoutDescriptor() (int, error)
+}
+type pairSource interface {
+	DuplicateTrashDescriptorPair() (mounts.TrashDescriptorPair, error)
+}
+type topologySource interface {
+	DuplicateTrashTopologyDescriptorSet() (mounts.TrashTopologyDescriptorSet, error)
+}
+type unrelatedSource interface {
+	Duplicate() error
+}
+func duplicate(root rootSource, layout layoutSource, pair pairSource, topology topologySource, unrelated unrelatedSource) {
+	_, _ = root.DuplicateRootDescriptor()
+	_, _ = layout.DuplicateLayoutDescriptor()
+	_, _ = pair.DuplicateTrashDescriptorPair()
+	_, _ = topology.DuplicateTrashTopologyDescriptorSet()
+	_ = unrelated.Duplicate()
+}
+`), 0)
+	if err != nil {
+		t.Fatalf("parse raw lease interface source: %v", err)
+	}
+
+	function := functionDeclarationNamed(t, file, "duplicate")
+	for _, name := range []string{
+		"DuplicateRootDescriptor",
+		"DuplicateLayoutDescriptor",
+		"DuplicateTrashDescriptorPair",
+		"DuplicateTrashTopologyDescriptorSet",
+	} {
+		selector := functionSelectorNamed(t, function.Body, name)
+		if !isForbiddenRawLeaseDescriptorBorrow(selector) {
+			t.Errorf("raw descriptor borrow %s through an interface receiver is not rejected", name)
+		}
+	}
+	if selector := functionSelectorNamed(t, function.Body, "Duplicate"); isForbiddenRawLeaseDescriptorBorrow(selector) {
+		t.Error("unrelated Duplicate selector is mistaken for a reserved raw descriptor borrow")
 	}
 }
 
@@ -1316,31 +1370,24 @@ func assertFilesystemMutationBoundaries(t *testing.T, root string) {
 
 // assertRootLeaseDuplicateBoundary makes the one intentional raw descriptor
 // handoff explicit: linuxfs may duplicate a trusted root only to construct its
-// rooted traversal lease. Other production packages must use the safe API
-// rather than borrow a raw descriptor from mounts.RootLease.
+// rooted traversal lease. Capability-specific selector names make the rule
+// apply equally to direct, aliased, and interface-mediated calls.
 func assertRootLeaseDuplicateBoundary(t *testing.T, root, modulePath string) {
 	t.Helper()
 
-	mountsImportPath := modulePath + "/" + mountsPackagePath
 	for _, directory := range []string{"cmd", "internal"} {
 		forEachProductionGoFile(t, root, directory, func(path string, file *ast.File) {
 			if filepath.ToSlash(filepath.Dir(pathFromRoot(root, path))) == linuxfsPackagePath {
 				return
 			}
 
-			aliases := productionImportAliases(t, path, file)
-			globalRootLeases := mountsRootLeaseVariablesAtFileScope(file, aliases, mountsImportPath)
-			forEachFunctionScope(file, func(parameters []*ast.Field, body *ast.BlockStmt) {
-				rootLeases := mountsRootLeaseVariablesForScope(parameters, body, aliases, mountsImportPath)
-				addVariableObjects(rootLeases, globalRootLeases)
-				inspectFunctionScope(body, func(node ast.Node) bool {
-					selector, ok := node.(*ast.SelectorExpr)
-					if !ok || selector.Sel.Name != "Duplicate" || !isTrackedMountsRootLeaseReceiver(selector.X, rootLeases, aliases, mountsImportPath) {
-						return true
-					}
-					t.Errorf("%s calls mounts.RootLease.Duplicate; only %s may obtain the intentional raw root-descriptor handoff", pathFromRoot(root, path), linuxfsPackagePath)
+			ast.Inspect(file, func(node ast.Node) bool {
+				selector, ok := node.(*ast.SelectorExpr)
+				if !ok || selector.Sel.Name != "DuplicateRootDescriptor" {
 					return true
-				})
+				}
+				t.Errorf("%s calls reserved raw root-descriptor borrow %s; only %s may obtain it", pathFromRoot(root, path), selector.Sel.Name, linuxfsPackagePath)
+				return true
 			})
 		})
 	}
@@ -1348,63 +1395,67 @@ func assertRootLeaseDuplicateBoundary(t *testing.T, root, modulePath string) {
 
 // assertLayoutLeaseDuplicateBoundary applies the same raw-descriptor rule to
 // engine/helper-owned recovery layouts. Only linuxfs may convert a qualified
-// layout lease into its internal descriptor-rooted operation lease.
+// layout lease into its internal descriptor-rooted operation lease, including
+// through an otherwise opaque interface receiver.
 func assertLayoutLeaseDuplicateBoundary(t *testing.T, root, modulePath string) {
 	t.Helper()
 
-	mountsImportPath := modulePath + "/" + mountsPackagePath
 	for _, directory := range []string{"cmd", "internal"} {
 		forEachProductionGoFile(t, root, directory, func(path string, file *ast.File) {
 			if filepath.ToSlash(filepath.Dir(pathFromRoot(root, path))) == linuxfsPackagePath {
 				return
 			}
 
-			aliases := productionImportAliases(t, path, file)
-			globalLayouts := mountsLayoutLeaseVariablesAtFileScope(file, aliases, mountsImportPath)
-			forEachFunctionScope(file, func(parameters []*ast.Field, body *ast.BlockStmt) {
-				layouts := mountsLayoutLeaseVariablesForScope(parameters, body, aliases, mountsImportPath)
-				addVariableObjects(layouts, globalLayouts)
-				inspectFunctionScope(body, func(node ast.Node) bool {
-					selector, ok := node.(*ast.SelectorExpr)
-					if !ok || selector.Sel.Name != "Duplicate" || !isTrackedMountsLayoutLeaseReceiver(selector.X, layouts, aliases, mountsImportPath) {
-						return true
-					}
-					t.Errorf("%s calls mounts.LayoutLease.Duplicate; only %s may obtain a raw recovery-layout descriptor", pathFromRoot(root, path), linuxfsPackagePath)
+			ast.Inspect(file, func(node ast.Node) bool {
+				selector, ok := node.(*ast.SelectorExpr)
+				if !ok || selector.Sel.Name != "DuplicateLayoutDescriptor" {
 					return true
-				})
+				}
+				t.Errorf("%s calls reserved raw recovery-layout descriptor borrow %s; only %s may obtain it", pathFromRoot(root, path), selector.Sel.Name, linuxfsPackagePath)
+				return true
 			})
 		})
 	}
 }
 
 // assertTrashLeaseDuplicateBoundary keeps Freedesktop Trash files/info
-// descriptor pairs inside the rooted filesystem layer. Trash policy may select
-// a trusted bundle but must not obtain raw descriptors itself.
+// descriptor pairs and full topology sets inside the rooted filesystem layer.
+// Trash policy may select a trusted bundle but must not obtain raw descriptors
+// itself, including through an interface receiver.
 func assertTrashLeaseDuplicateBoundary(t *testing.T, root, modulePath string) {
 	t.Helper()
 
-	mountsImportPath := modulePath + "/" + mountsPackagePath
 	for _, directory := range []string{"cmd", "internal"} {
 		forEachProductionGoFile(t, root, directory, func(path string, file *ast.File) {
 			if filepath.ToSlash(filepath.Dir(pathFromRoot(root, path))) == linuxfsPackagePath {
 				return
 			}
 
-			aliases := productionImportAliases(t, path, file)
-			globalTrashLeases := mountsTrashLeaseVariablesAtFileScope(file, aliases, mountsImportPath)
-			forEachFunctionScope(file, func(parameters []*ast.Field, body *ast.BlockStmt) {
-				trashLeases := mountsTrashLeaseVariablesForScope(parameters, body, aliases, mountsImportPath)
-				addVariableObjects(trashLeases, globalTrashLeases)
-				inspectFunctionScope(body, func(node ast.Node) bool {
-					selector, ok := node.(*ast.SelectorExpr)
-					if !ok || selector.Sel.Name != "Duplicate" || !isTrackedMountsTrashLeaseReceiver(selector.X, trashLeases, aliases, mountsImportPath) {
-						return true
-					}
-					t.Errorf("%s calls mounts.TrashLease.Duplicate; only %s may obtain raw Trash files/info descriptors", pathFromRoot(root, path), linuxfsPackagePath)
+			ast.Inspect(file, func(node ast.Node) bool {
+				selector, ok := node.(*ast.SelectorExpr)
+				if !ok || !isForbiddenRawLeaseDescriptorBorrow(selector) {
 					return true
-				})
+				}
+				t.Errorf("%s calls reserved raw Trash descriptor borrow %s; only %s may obtain it", pathFromRoot(root, path), selector.Sel.Name, linuxfsPackagePath)
+				return true
 			})
 		})
+	}
+}
+
+// isForbiddenRawLeaseDescriptorBorrow recognizes the capability-specific
+// selector names that can hand out raw descriptors. Each name is reserved for
+// mounts-to-linuxfs transfer, so an AST-only check remains sound even when a
+// caller hides the concrete lease behind an alias or interface.
+func isForbiddenRawLeaseDescriptorBorrow(selector *ast.SelectorExpr) bool {
+	if selector == nil {
+		return false
+	}
+	switch selector.Sel.Name {
+	case "DuplicateRootDescriptor", "DuplicateLayoutDescriptor", "DuplicateTrashDescriptorPair", "DuplicateTrashTopologyDescriptorSet":
+		return true
+	default:
+		return false
 	}
 }
 

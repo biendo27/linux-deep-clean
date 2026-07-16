@@ -148,7 +148,7 @@ func TestTrashDirectorySourceFailureClassificationAndCleanup(t *testing.T) {
 			t.Fatalf("openTrashDirectoriesWithSource(invalid root) = (%v, %v), want nil + ErrUnsupported", directories, err)
 		}
 		if calls != 0 {
-			t.Fatalf("invalid root called source Duplicate() %d times, want zero", calls)
+			t.Fatalf("invalid root called source DuplicateTrashDescriptorPair() %d times, want zero", calls)
 		}
 	})
 }
@@ -209,7 +209,7 @@ func TestTrashDescriptorPairValidationAndIdentityComparison(t *testing.T) {
 	}
 
 	directories, source, _, _ := openTrashBridgeTestDirectories(t)
-	pair, err := source.Duplicate()
+	pair, err := source.DuplicateTrashDescriptorPair()
 	if err != nil {
 		t.Fatalf("duplicate trusted Trash pair: %v", err)
 	}

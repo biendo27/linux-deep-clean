@@ -46,10 +46,21 @@ weaker fallback.
 - Added an engine/helper-selected Trash descriptor-bundle foundation. The
   ownership-transfer constructor normalizes opener-owned descriptors away from
   standard streams; `TrashLease` requalifies root, role, ownership, mode, and
-  mount evidence before only `linuxfs` can receive fresh `files`/`info`
-  duplicates. The current authority is intentionally a pre-selector bundle:
-  it does not yet prove the literal FDO Home, `.Trash/$uid`, or `.Trash-$uid`
-  topology.
+  mount evidence before only `linuxfs` can receive a fresh legacy
+  `files`/`info` pair or, for an attested topology, the complete fixed-role
+  descriptor set. Capability-specific raw-descriptor handoffs are rejected by
+  the architecture boundary even through an interface receiver. Its legacy
+  form remains metadata-only.
+- Added an opt-in topology-qualified Trash boundary. A lease with an attested
+  home-data or filesystem-top anchor lends a full, requalified descriptor set
+  only to `linuxfs`; `trash.ValidateTrashLayout` proves literal `Trash`,
+  `.Trash-$uid`, or sticky `.Trash/$uid` relationships plus literal `files`
+  and `info` children with required `openat2` resolution. It rejects unrelated
+  descriptors, symlinked children, wrong placement anchors, and sticky-bit
+  drift, and repeats the proof before and after metadata publication. A
+  post-create proof failure retains the metadata record and reports an
+  interrupted/drifted result. It still performs no path discovery or
+  user-content mutation.
 - Added descriptor-rooted durable publication of one `.trashinfo` record with
   no-follow/no-replace creation, file and directory syncs, and post-sync
   identity/content verification. The accepted `ldc-` lowercase-hex token
@@ -59,19 +70,23 @@ weaker fallback.
 
 ## Validation evidence
 
-The default lane uses test-owned temporary roots only. Before publication, the
+The default lane uses test-owned temporary roots only. At this checkpoint, the
 following local checks passed:
 
 - `GOTOOLCHAIN=local go test ./... -count=1`
 - `GOTOOLCHAIN=local go test -race ./... -count=1`
 - `GOTOOLCHAIN=local go vet ./...`
-- `GOTOOLCHAIN=local go mod verify`, `make build`, and
-  `GOTOOLCHAIN=local go test -tags=integration ./tests/integration -count=1`
+- `GOTOOLCHAIN=local go mod verify` and `make build`
 - `GOCACHE=/tmp/ldc-go-build make coverage` passed and enforces >=90%
   statement coverage for the Phase 3 validation/state-machine packages:
-  `internal/linuxfs` 91.3%, `internal/mounts` 91.4%, and `internal/trash`
+  `internal/linuxfs` 90.1%, `internal/mounts` 90.0%, and `internal/trash`
   97.1%. The explicit cache location is required by this sandbox; the Makefile
   itself remains hermetic/offline.
+
+The targeted integration command
+`GOTOOLCHAIN=local go test -tags=integration ./tests/integration -run 'LinuxFS|TrashCrash' -count=1`
+completed with `[no tests to run]`; it is not evidence for the missing Phase 3
+integration or crash-recovery behavior.
 
 `govulncheck` could not be run in this environment: the tool was not cached
 and the sandbox denied its required request to `proxy.golang.org`. It remains
@@ -84,10 +99,10 @@ ordinary staged object remains retained and reports `unsupported`.
 
 ## Hard gates still open
 
-- The layout-authority contract and a descriptor-bundle Trash pre-selector
-  exist, but no engine/helper composition has registered/proven a private
-  same-mount quarantine directory or a compliant FDO Trash topology,
-  including the required metadata basis for a source root that may be a
+- The layout-authority contract and descriptor-rooted FDO topology validator
+  exist, but no engine/helper composition has registered a real source-root
+  mapping for a private same-mount quarantine directory or a usable Trash
+  topology with the required metadata basis for a source root that may be a
   subdirectory. Staging, content Trash moves, and quarantine operations remain
   unsupported rather than accepting an arbitrary path or falling back to
   permanent deletion. That authority must also prove an exclusive staged

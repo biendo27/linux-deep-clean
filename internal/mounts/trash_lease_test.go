@@ -99,6 +99,226 @@ func TestOpenTrustedTrashRequalifiesAStickySharedParent(t *testing.T) {
 	defer pair.Close()
 }
 
+func TestTopologyQualifiedTrashLeaseDuplicatesAllLiteralLayoutRoles(t *testing.T) {
+	root := openLayoutTestRoot(t)
+	rootID := root.RootID()
+	authority := testTrashAuthority(t, rootID, TrashPlacementTopUser, 1000, TrashMetadataMapping{Basis: TrashMetadataBasisTopRelative})
+	authority.Topology = TrashTopology{
+		AnchorKind: TrashAnchorFilesystemTop,
+		Anchor:     testTrashLayoutEvidence(200, 1000, 0o700),
+	}
+	directories := trashTestDirectories(t, false)
+	authority.Open = func() (TrashDescriptors, error) {
+		return openTrashTopologyTestDescriptors(directories, false)
+	}
+
+	lease, err := openTrustedTrashWith(
+		StaticTrashRegistry{rootID: authority},
+		root,
+		trashInspectionSequence(
+			testInspection(),
+			authority.Topology.Anchor.inspection(),
+			authority.Expected.TrashRoot.inspection(),
+			authority.Expected.Files.inspection(),
+			authority.Expected.Info.inspection(),
+		),
+		func() error { return nil },
+	)
+	if err != nil {
+		t.Fatalf("openTrustedTrashWith() error = %v", err)
+	}
+	defer lease.Close()
+
+	if lease.AnchorKind() != TrashAnchorFilesystemTop {
+		t.Fatalf("lease.AnchorKind() = %q, want filesystem top", lease.AnchorKind())
+	}
+	set, err := lease.duplicateTopologyWith(trashInspectionSequence(
+		testInspection(),
+		authority.Expected.TrashRoot.inspection(),
+		authority.Expected.Files.inspection(),
+		authority.Expected.Info.inspection(),
+		authority.Topology.Anchor.inspection(),
+	))
+	if err != nil {
+		t.Fatalf("lease.duplicateTopologyWith() error = %v", err)
+	}
+	defer set.Close()
+	for name, fd := range map[string]int{
+		"anchor":     set.AnchorFD,
+		"Trash root": set.TrashRootFD,
+		"files":      set.FilesFD,
+		"info":       set.InfoFD,
+	} {
+		flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+		if err != nil || flags&unix.FD_CLOEXEC == 0 {
+			t.Fatalf("topology %s duplicate flags = (%#x, %v), want FD_CLOEXEC", name, flags, err)
+		}
+	}
+	if set.SharedTopFD != -1 {
+		t.Fatalf("top-user topology duplicate shared parent = %d, want absent", set.SharedTopFD)
+	}
+}
+
+func TestTopologyQualifiedTrashLeaseClosesRejectedDescriptorHandoffs(t *testing.T) {
+	root := openLayoutTestRoot(t)
+	rootID := root.RootID()
+	authority := testTrashAuthority(t, rootID, TrashPlacementTopUser, 1000, TrashMetadataMapping{Basis: TrashMetadataBasisTopRelative})
+	authority.Topology = TrashTopology{
+		AnchorKind: TrashAnchorFilesystemTop,
+		Anchor:     testTrashLayoutEvidence(200, 1000, 0o700),
+	}
+	directories := trashTestDirectories(t, false)
+	authority.Open = func() (TrashDescriptors, error) {
+		return openTrashTopologyTestDescriptors(directories, false)
+	}
+
+	lease, err := openTrustedTrashWith(
+		StaticTrashRegistry{rootID: authority},
+		root,
+		trashInspectionSequence(
+			testInspection(),
+			authority.Topology.Anchor.inspection(),
+			authority.Expected.TrashRoot.inspection(),
+			authority.Expected.Files.inspection(),
+			authority.Expected.Info.inspection(),
+		),
+		func() error { return nil },
+	)
+	if err != nil {
+		t.Fatalf("openTrustedTrashWith() error = %v", err)
+	}
+	defer lease.Close()
+
+	inspections := func() rootInspector {
+		return trashInspectionSequence(
+			testInspection(),
+			authority.Expected.TrashRoot.inspection(),
+			authority.Expected.Files.inspection(),
+			authority.Expected.Info.inspection(),
+			authority.Topology.Anchor.inspection(),
+		)
+	}
+
+	firstDuplicate := -1
+	calls := 0
+	_, err = lease.duplicateTopologyWithFcntl(inspections(), func(fd int) (int, error) {
+		calls++
+		if calls == 1 {
+			duplicate, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 3)
+			firstDuplicate = duplicate
+			return duplicate, err
+		}
+		return -1, unix.EMFILE
+	})
+	if !errors.Is(err, unix.EMFILE) {
+		t.Fatalf("lease.duplicateTopologyWithFcntl() error = %v, want EMFILE", err)
+	}
+	assertTrashFDClosed(t, "first topology duplicate after partial failure", firstDuplicate)
+
+	if _, err := lease.duplicateTopologyWithFcntl(inspections(), func(int) (int, error) { return 2, nil }); !errors.Is(err, ErrInvalidAuthority) {
+		t.Fatalf("lease.duplicateTopologyWithFcntl(standard stream) error = %v, want ErrInvalidAuthority", err)
+	}
+
+	if _, err := lease.duplicateTopologyWithFcntl(inspections(), func(int) (int, error) { return lease.descriptors.Anchor, unix.EIO }); !errors.Is(err, unix.EIO) {
+		t.Fatalf("lease.duplicateTopologyWithFcntl(held descriptor with error) error = %v, want EIO", err)
+	}
+	if _, err := unix.FcntlInt(uintptr(lease.descriptors.Anchor), unix.F_GETFD, 0); err != nil {
+		t.Fatalf("held topology anchor after rejected duplicate error = %v, want still open", err)
+	}
+	if _, err := lease.duplicateTopologyWithFcntl(nil, func(int) (int, error) { return -1, nil }); !errors.Is(err, ErrInvalidAuthority) {
+		t.Fatalf("lease.duplicateTopologyWithFcntl(nil inspect) error = %v, want ErrInvalidAuthority", err)
+	}
+	if _, err := lease.duplicateTopologyWithFcntl(inspections(), nil); !errors.Is(err, ErrInvalidAuthority) {
+		t.Fatalf("lease.duplicateTopologyWithFcntl(nil duplicate) error = %v, want ErrInvalidAuthority", err)
+	}
+}
+
+func TestTopologyQualifiedTrashLeaseRejectsLegacyOrInconsistentAuthority(t *testing.T) {
+	root := openLayoutTestRoot(t)
+	rootID := root.RootID()
+	legacy := testTrashAuthority(t, rootID, TrashPlacementTopUser, 1000, TrashMetadataMapping{Basis: TrashMetadataBasisTopRelative})
+	lease, err := openTrustedTrashWith(
+		StaticTrashRegistry{rootID: legacy},
+		root,
+		trashInspectionSequence(testInspection(), legacy.Expected.TrashRoot.inspection(), legacy.Expected.Files.inspection(), legacy.Expected.Info.inspection()),
+		func() error { return nil },
+	)
+	if err != nil {
+		t.Fatalf("open trusted legacy Trash lease: %v", err)
+	}
+	defer lease.Close()
+	if _, err := lease.duplicateTopologyWith(testInspectionFor); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("legacy lease.duplicateTopologyWith() error = %v, want ErrUnsupported", err)
+	}
+
+	valid := legacy
+	valid.Topology = TrashTopology{
+		AnchorKind: TrashAnchorFilesystemTop,
+		Anchor:     testTrashLayoutEvidence(200, 1000, 0o700),
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*TrashAuthority)
+	}{
+		{
+			name: "home uses filesystem-top anchor",
+			mutate: func(authority *TrashAuthority) {
+				authority.Placement = TrashPlacementHome
+				authority.Metadata.Basis = TrashMetadataBasisHomeAbsolute
+			},
+		},
+		{
+			name: "anchor aliases Trash root",
+			mutate: func(authority *TrashAuthority) {
+				authority.Topology.Anchor.Inode = authority.Expected.TrashRoot.Inode
+			},
+		},
+		{
+			name: "anchor mount differs",
+			mutate: func(authority *TrashAuthority) {
+				authority.Topology.Anchor.Mount.ID++
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			authority := valid
+			test.mutate(&authority)
+			if err := authority.validate(rootID); !errors.Is(err, ErrInvalidAuthority) {
+				t.Fatalf("TrashAuthority.validate() error = %v, want ErrInvalidAuthority", err)
+			}
+		})
+	}
+}
+
+func TestOpenTrustedTrashRejectsTopologyDescriptorWithoutTopologyAuthority(t *testing.T) {
+	root := openLayoutTestRoot(t)
+	rootID := root.RootID()
+	authority := testTrashAuthority(t, rootID, TrashPlacementTopUser, 1000, TrashMetadataMapping{Basis: TrashMetadataBasisTopRelative})
+	directories := trashTestDirectories(t, false)
+	authority.Open = func() (TrashDescriptors, error) {
+		return openTrashTopologyTestDescriptors(directories, false)
+	}
+
+	lease, err := openTrustedTrashWith(
+		StaticTrashRegistry{rootID: authority},
+		root,
+		trashInspectionSequence(
+			testInspection(),
+			authority.Expected.TrashRoot.inspection(),
+			authority.Expected.Files.inspection(),
+			authority.Expected.Info.inspection(),
+		),
+		func() error { return nil },
+	)
+	if !errors.Is(err, ErrInvalidAuthority) {
+		t.Fatalf("openTrustedTrashWith() error = %v, want ErrInvalidAuthority", err)
+	}
+	if lease != nil {
+		defer lease.Close()
+		t.Fatal("legacy authority accepted an unbound topology descriptor")
+	}
+}
+
 func TestTrashAuthorityFailsClosedForPlacementBasisOwnershipAndLayout(t *testing.T) {
 	rootID := testRootID(t)
 	valid := testTrashAuthority(t, rootID, TrashPlacementTopShared, 1000, TrashMetadataMapping{
@@ -173,7 +393,7 @@ func TestTrashAuthorityFailsClosedForPlacementBasisOwnershipAndLayout(t *testing
 }
 
 func TestTrashDescriptorBundleValidationFailsClosed(t *testing.T) {
-	valid := TrashDescriptors{TrashRoot: 3, Files: 4, Info: 5, SharedTop: -1, normalized: true}
+	valid := TrashDescriptors{Anchor: -1, TrashRoot: 3, Files: 4, Info: 5, SharedTop: -1, normalized: true}
 	if err := valid.validate(TrashPlacementTopUser); err != nil {
 		t.Fatalf("valid TrashDescriptors.validate() error = %v", err)
 	}
@@ -184,10 +404,10 @@ func TestTrashDescriptorBundleValidationFailsClosed(t *testing.T) {
 		bundle    TrashDescriptors
 	}{
 		{name: "unknown placement", placement: TrashPlacement("future"), bundle: valid},
-		{name: "unnormalized bundle", placement: TrashPlacementTopUser, bundle: TrashDescriptors{TrashRoot: 3, Files: 4, Info: 5, SharedTop: -1}},
-		{name: "reserved descriptor", placement: TrashPlacementTopUser, bundle: TrashDescriptors{TrashRoot: 2, Files: 4, Info: 5, SharedTop: -1, normalized: true}},
-		{name: "aliased protected descriptors", placement: TrashPlacementTopUser, bundle: TrashDescriptors{TrashRoot: 3, Files: 4, Info: 4, SharedTop: -1, normalized: true}},
-		{name: "unexpected shared parent", placement: TrashPlacementTopUser, bundle: TrashDescriptors{TrashRoot: 3, Files: 4, Info: 5, SharedTop: 6, normalized: true}},
+		{name: "unnormalized bundle", placement: TrashPlacementTopUser, bundle: TrashDescriptors{Anchor: -1, TrashRoot: 3, Files: 4, Info: 5, SharedTop: -1}},
+		{name: "reserved descriptor", placement: TrashPlacementTopUser, bundle: TrashDescriptors{Anchor: -1, TrashRoot: 2, Files: 4, Info: 5, SharedTop: -1, normalized: true}},
+		{name: "aliased protected descriptors", placement: TrashPlacementTopUser, bundle: TrashDescriptors{Anchor: -1, TrashRoot: 3, Files: 4, Info: 4, SharedTop: -1, normalized: true}},
+		{name: "unexpected shared parent", placement: TrashPlacementTopUser, bundle: TrashDescriptors{Anchor: -1, TrashRoot: 3, Files: 4, Info: 5, SharedTop: 6, normalized: true}},
 		{name: "missing shared parent", placement: TrashPlacementTopShared, bundle: valid},
 	}
 	for _, test := range tests {
@@ -462,7 +682,7 @@ func TestTrashDescriptorClosuresIgnoreReservedAndRepeatedFDs(t *testing.T) {
 	if err := bundle.Close(); err != nil {
 		t.Fatalf("zero TrashDescriptors.Close() error = %v", err)
 	}
-	if bundle != (TrashDescriptors{TrashRoot: -1, Files: -1, Info: -1, SharedTop: -1}) {
+	if bundle != (TrashDescriptors{Anchor: -1, TrashRoot: -1, Files: -1, Info: -1, SharedTop: -1}) {
 		t.Fatalf("zero TrashDescriptors.Close() left %+v, want all fields released", bundle)
 	}
 
@@ -483,7 +703,7 @@ func TestTrashDescriptorClosuresIgnoreReservedAndRepeatedFDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open repeated bundle descriptor: %v", err)
 	}
-	bundle = TrashDescriptors{TrashRoot: fd, Files: fd, Info: -1, SharedTop: -1, normalized: true}
+	bundle = TrashDescriptors{Anchor: -1, TrashRoot: fd, Files: fd, Info: -1, SharedTop: -1, normalized: true}
 	if err := bundle.Close(); err != nil {
 		t.Fatalf("repeated TrashDescriptors.Close() error = %v", err)
 	}
@@ -498,6 +718,54 @@ func TestTrashDescriptorClosuresIgnoreReservedAndRepeatedFDs(t *testing.T) {
 		t.Fatalf("repeated TrashDescriptorPair.Close() error = %v", err)
 	}
 	assertTrashFDClosed(t, "repeated pair descriptor", fd)
+
+	var nilTopologySet *TrashTopologyDescriptorSet
+	if err := nilTopologySet.Close(); err != nil {
+		t.Fatalf("nil TrashTopologyDescriptorSet.Close() error = %v", err)
+	}
+	topologySet := TrashTopologyDescriptorSet{}
+	if err := topologySet.Close(); err != nil {
+		t.Fatalf("zero TrashTopologyDescriptorSet.Close() error = %v", err)
+	}
+	if topologySet != EmptyTrashTopologyDescriptorSet() {
+		t.Fatalf("zero TrashTopologyDescriptorSet.Close() left %+v, want all fields released", topologySet)
+	}
+
+	fd, err = unix.Open(directory, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("open repeated topology descriptor: %v", err)
+	}
+	topologySet = TrashTopologyDescriptorSet{AnchorFD: fd, TrashRootFD: fd, FilesFD: fd, InfoFD: fd, SharedTopFD: fd}
+	if err := topologySet.Close(); err != nil {
+		t.Fatalf("repeated TrashTopologyDescriptorSet.Close() error = %v", err)
+	}
+	assertTrashFDClosed(t, "repeated topology descriptor", fd)
+}
+
+func TestNewTrashTopologyDescriptorsRequiresAnchorAndClosesTransferredDescriptors(t *testing.T) {
+	directory := t.TempDir()
+	openDirectory := func() int {
+		t.Helper()
+		fd, err := unix.Open(directory, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		if err != nil {
+			t.Fatalf("open topology descriptor candidate: %v", err)
+		}
+		return fd
+	}
+	trashRoot := openDirectory()
+	files := openDirectory()
+	info := openDirectory()
+
+	descriptors, err := NewTrashTopologyDescriptors(-1, trashRoot, files, info, -1)
+	if !errors.Is(err, ErrInvalidAuthority) {
+		t.Fatalf("NewTrashTopologyDescriptors() error = %v, want ErrInvalidAuthority", err)
+	}
+	if descriptors != emptyTrashDescriptors() {
+		t.Fatalf("NewTrashTopologyDescriptors() descriptors = %+v, want empty bundle", descriptors)
+	}
+	for name, fd := range map[string]int{"Trash root": trashRoot, "files": files, "info": info} {
+		assertTrashFDClosed(t, name+" after missing anchor", fd)
+	}
 }
 
 func TestNewTrashDescriptorsNormalizesAnOwnedStandardDescriptor(t *testing.T) {
@@ -562,14 +830,17 @@ func closeTrashTestStandardInput(t *testing.T) {
 
 func TestTrashLeaseClosedAndMetadataMappingFailClosed(t *testing.T) {
 	var nilLease *TrashLease
-	if nilLease.RootID() != "" || nilLease.Placement() != "" || nilLease.MetadataBasis() != "" {
+	if nilLease.RootID() != "" || nilLease.Placement() != "" || nilLease.AnchorKind() != "" || nilLease.MetadataBasis() != "" {
 		t.Fatal("nil TrashLease accessors exposed authority")
 	}
 	if err := nilLease.Close(); err != nil {
 		t.Fatalf("nil TrashLease.Close() error = %v", err)
 	}
-	if _, err := nilLease.Duplicate(); !errors.Is(err, ErrLeaseClosed) {
-		t.Fatalf("nil TrashLease.Duplicate() error = %v, want ErrLeaseClosed", err)
+	if _, err := nilLease.DuplicateTrashDescriptorPair(); !errors.Is(err, ErrLeaseClosed) {
+		t.Fatalf("nil TrashLease.DuplicateTrashDescriptorPair() error = %v, want ErrLeaseClosed", err)
+	}
+	if _, err := nilLease.DuplicateTrashTopologyDescriptorSet(); !errors.Is(err, ErrLeaseClosed) {
+		t.Fatalf("nil TrashLease.DuplicateTrashTopologyDescriptorSet() error = %v, want ErrLeaseClosed", err)
 	}
 	if _, err := nilLease.MetadataPathFor(mustTrashMetadataPath(t, [][]byte{[]byte("source")})); !errors.Is(err, ErrLeaseClosed) {
 		t.Fatalf("nil TrashLease.MetadataPathFor() error = %v, want ErrLeaseClosed", err)
@@ -607,8 +878,8 @@ func TestTrashLeaseClosedAndMetadataMappingFailClosed(t *testing.T) {
 	if err := lease.Close(); err != nil {
 		t.Fatalf("second lease.Close() error = %v", err)
 	}
-	if _, err := lease.Duplicate(); !errors.Is(err, ErrLeaseClosed) {
-		t.Fatalf("closed TrashLease.Duplicate() error = %v, want ErrLeaseClosed", err)
+	if _, err := lease.DuplicateTrashDescriptorPair(); !errors.Is(err, ErrLeaseClosed) {
+		t.Fatalf("closed TrashLease.DuplicateTrashDescriptorPair() error = %v, want ErrLeaseClosed", err)
 	}
 	if _, err := lease.MetadataPathFor(mustTrashMetadataPath(t, [][]byte{[]byte("source")})); !errors.Is(err, ErrLeaseClosed) {
 		t.Fatalf("closed TrashLease.MetadataPathFor() error = %v, want ErrLeaseClosed", err)
@@ -688,6 +959,7 @@ func (expectation LayoutExpectation) inspection() MountInspection {
 }
 
 type trashTestDirectorySet struct {
+	anchor    string
 	trashRoot string
 	files     string
 	info      string
@@ -697,6 +969,7 @@ type trashTestDirectorySet struct {
 func trashTestDirectories(t *testing.T, hasSharedTop bool) trashTestDirectorySet {
 	t.Helper()
 	directories := trashTestDirectorySet{
+		anchor:    t.TempDir(),
 		trashRoot: t.TempDir(),
 		files:     t.TempDir(),
 		info:      t.TempDir(),
@@ -708,10 +981,25 @@ func trashTestDirectories(t *testing.T, hasSharedTop bool) trashTestDirectorySet
 }
 
 func openTrashTestDescriptors(directories trashTestDirectorySet, hasSharedTop bool) (TrashDescriptors, error) {
+	return openTrashTestDescriptorsWithTopology(directories, hasSharedTop, false)
+}
+
+func openTrashTopologyTestDescriptors(directories trashTestDirectorySet, hasSharedTop bool) (TrashDescriptors, error) {
+	return openTrashTestDescriptorsWithTopology(directories, hasSharedTop, true)
+}
+
+func openTrashTestDescriptorsWithTopology(directories trashTestDirectorySet, hasSharedTop, includeTopology bool) (TrashDescriptors, error) {
 	descriptors := emptyTrashDescriptors()
 	var err error
+	if includeTopology {
+		descriptors.Anchor, err = unix.Open(directories.anchor, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return descriptors, err
+		}
+	}
 	descriptors.TrashRoot, err = unix.Open(directories.trashRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
+		closeTrashTestDescriptors(descriptors)
 		return descriptors, err
 	}
 	descriptors.Files, err = unix.Open(directories.files, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
@@ -731,7 +1019,12 @@ func openTrashTestDescriptors(directories trashTestDirectorySet, hasSharedTop bo
 			return emptyTrashDescriptors(), err
 		}
 	}
-	normalized, err := NewTrashDescriptors(descriptors.TrashRoot, descriptors.Files, descriptors.Info, descriptors.SharedTop)
+	var normalized TrashDescriptors
+	if includeTopology {
+		normalized, err = NewTrashTopologyDescriptors(descriptors.Anchor, descriptors.TrashRoot, descriptors.Files, descriptors.Info, descriptors.SharedTop)
+	} else {
+		normalized, err = NewTrashDescriptors(descriptors.TrashRoot, descriptors.Files, descriptors.Info, descriptors.SharedTop)
+	}
 	if err != nil {
 		return emptyTrashDescriptors(), err
 	}
@@ -739,7 +1032,7 @@ func openTrashTestDescriptors(directories trashTestDirectorySet, hasSharedTop bo
 }
 
 func closeTrashTestDescriptors(descriptors TrashDescriptors) {
-	for _, fd := range []int{descriptors.TrashRoot, descriptors.Files, descriptors.Info, descriptors.SharedTop} {
+	for _, fd := range []int{descriptors.Anchor, descriptors.TrashRoot, descriptors.Files, descriptors.Info, descriptors.SharedTop} {
 		if fd >= 0 {
 			_ = unix.Close(fd)
 		}
