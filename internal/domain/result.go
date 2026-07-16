@@ -308,7 +308,21 @@ func (result ActionResult) Validate() error {
 		if result.reconciliationState() != ReconciliationRequired || result.ReconciliationProbe == nil {
 			return fmt.Errorf("indeterminate action result requires reconciliation_required and a typed probe")
 		}
-	case OutcomeSkipped, OutcomeDrifted, OutcomeDenied, OutcomeUnsupported, OutcomeInterrupted:
+	case OutcomeDrifted:
+		if result.Attempted {
+			switch result.recoveryDisposition() {
+			case RecoveryRetained, RecoveryRestored:
+				// A filesystem action can conclusively detect a mismatch only after
+				// staging. Its safety recovery is known, so this is drift rather
+				// than an indeterminate dispatch result.
+			default:
+				return fmt.Errorf("attempted drifted action result requires retained or restored recovery")
+			}
+		}
+		if err := result.requireNoReconciliation(); err != nil {
+			return err
+		}
+	case OutcomeSkipped, OutcomeDenied, OutcomeUnsupported, OutcomeInterrupted:
 		if result.Attempted {
 			return fmt.Errorf("%s action result must become indeterminate after dispatch", result.Outcome)
 		}
@@ -318,8 +332,9 @@ func (result ActionResult) Validate() error {
 	}
 
 	if result.Outcome != OutcomeSuccess {
-		if result.RecoveryHandle != nil {
-			return fmt.Errorf("only successful action results may carry recovery handles")
+		recoveryHandleAllowed := result.Outcome == OutcomeDrifted && result.Attempted && result.recoveryDisposition() == RecoveryRetained
+		if result.RecoveryHandle != nil && !recoveryHandleAllowed {
+			return fmt.Errorf("only successful actions or retained post-stage drift may carry recovery handles")
 		}
 		if !isZeroSizeFacts(result.VerifiedEffect) {
 			return fmt.Errorf("only successful action results may claim verified effects")
@@ -367,15 +382,15 @@ func (result ActionResult) validateRecoveryDisposition() error {
 			return fmt.Errorf("non-recovery action result must not carry a recovery handle")
 		}
 	case RecoveryRetained:
-		if result.Outcome != OutcomeSuccess || result.RecoveryHandle == nil {
-			return fmt.Errorf("retained recovery result requires success and a recovery handle")
+		if !result.isKnownRecoveryOutcome() || result.RecoveryHandle == nil {
+			return fmt.Errorf("retained recovery result requires a known success or attempted drift and a recovery handle")
 		}
 		if !isZeroSizeFacts(result.VerifiedEffect) {
 			return fmt.Errorf("retained recovery result must not claim freed space")
 		}
 	case RecoveryRestored:
-		if result.Outcome != OutcomeSuccess {
-			return fmt.Errorf("restored recovery result requires success")
+		if !result.isKnownRecoveryOutcome() {
+			return fmt.Errorf("restored recovery result requires a known success or attempted drift")
 		}
 		if result.RecoveryHandle != nil {
 			return fmt.Errorf("restored recovery result must not retain a recovery handle")
@@ -385,6 +400,10 @@ func (result ActionResult) validateRecoveryDisposition() error {
 		}
 	}
 	return nil
+}
+
+func (result ActionResult) isKnownRecoveryOutcome() bool {
+	return result.Outcome == OutcomeSuccess || (result.Outcome == OutcomeDrifted && result.Attempted)
 }
 
 // NewResult creates an isolated result value and derives its summary from the

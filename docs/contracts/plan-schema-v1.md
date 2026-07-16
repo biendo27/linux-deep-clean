@@ -83,6 +83,14 @@ carry an absolute path. Recovery disposition is
 explicitly `not_applicable`, `retained`, or `restored`; retained/restored
 outcomes cannot claim freed space as a rollback shortcut.
 
+Ordinary drift is pre-dispatch and therefore has `attempted: false`. A
+conclusively detected post-stage identity mismatch is the narrow exception: it
+is `drifted` with `attempted: true` and either `restored` or `retained`
+recovery. A retained mismatch carries its recovery handle; a restored mismatch
+does not. Both have zero verified effect and require no reconciliation because
+the safety state is known. An ambiguous post-stage state remains
+`indeterminate` with reconciliation instead.
+
 ## Canonical CBOR and digest
 
 `internal/planproto` is the sole CBOR boundary. It uses RFC 8949 deterministic
@@ -125,3 +133,8 @@ Schema v1 values are immutable contracts. Adding a field, enum, or semantic
 interpretation requires a new schema version, reviewed golden fixtures, a
 reader/writer compatibility decision, and any needed state migration. Existing
 v1 bytes are never silently reinterpreted.
+
+Before any persisted or released v1 reader existed, the post-stage-drift rule
+above was clarified using the existing result fields and enum values. It does
+not change the DTO shape or golden bytes, but validators from earlier source
+must be upgraded before they accept this known-safe state combination.

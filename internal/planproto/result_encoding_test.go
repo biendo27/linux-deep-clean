@@ -59,6 +59,51 @@ func TestResultEncodersNormalizeOrdinaryZeroStates(t *testing.T) {
 	})
 }
 
+func TestResultEncodersRoundTripKnownPostStageDrift(t *testing.T) {
+	plan := testPlan(t)
+	handle := testRecoveryHandle(t)
+	result, err := domain.NewResult(domain.Result{
+		SchemaVersion: domain.SchemaVersionV1,
+		PlanDigest:    plan.Digest(),
+		RunID:         mustRunID(t, "run-20260716-staged-drift"),
+		Actions: []domain.ActionResult{{
+			ActionID:       mustActionID(t, "trash-cache"),
+			Kind:           domain.ActionTrashPath,
+			Outcome:        domain.OutcomeDrifted,
+			Attempted:      true,
+			Recovery:       domain.RecoveryRetained,
+			RecoveryHandle: &handle,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("domain.NewResult() error = %v", err)
+	}
+
+	t.Run("CBOR", func(t *testing.T) {
+		encoded, err := EncodeResult(result)
+		if err != nil {
+			t.Fatalf("EncodeResult() error = %v", err)
+		}
+		decoded, err := DecodeResult(encoded, DefaultDecodeLimits())
+		if err != nil {
+			t.Fatalf("DecodeResult() error = %v", err)
+		}
+		requireResultEqual(t, result, decoded)
+	})
+
+	t.Run("JSON", func(t *testing.T) {
+		encoded, err := EncodeResultJSON(result)
+		if err != nil {
+			t.Fatalf("EncodeResultJSON() error = %v", err)
+		}
+		decoded, err := DecodeResultJSON(encoded, DefaultDecodeLimits())
+		if err != nil {
+			t.Fatalf("DecodeResultJSON() error = %v", err)
+		}
+		requireResultEqual(t, result, decoded)
+	})
+}
+
 func requireCanonicalOrdinaryResult(t *testing.T, want, got domain.Result) {
 	t.Helper()
 	if len(got.Actions) != 1 || got.Actions[0].Reconciliation != domain.ReconciliationNotRequired || got.Actions[0].Recovery != domain.RecoveryNotApplicable {

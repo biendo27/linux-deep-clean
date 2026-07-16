@@ -40,6 +40,83 @@ func TestUnknownCompletionRequiresReconciliation(t *testing.T) {
 	}
 }
 
+func TestPostStageDriftRecordsSafeRecovery(t *testing.T) {
+	handle := testRecoveryHandle(t)
+
+	for _, test := range []struct {
+		name     string
+		recovery RecoveryDisposition
+		handle   *RecoveryHandle
+	}{
+		{
+			name:     "restored without retaining a handle",
+			recovery: RecoveryRestored,
+		},
+		{
+			name:     "retained with a recovery handle",
+			recovery: RecoveryRetained,
+			handle:   &handle,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := NewResult(Result{
+				SchemaVersion: SchemaVersionV1,
+				PlanDigest:    testDigest(t, 17),
+				RunID:         testRunID(t),
+				Actions: []ActionResult{{
+					ActionID:       testActionID(t, "staged-drift"),
+					Kind:           ActionTrashPath,
+					Outcome:        OutcomeDrifted,
+					Attempted:      true,
+					Recovery:       test.recovery,
+					RecoveryHandle: test.handle,
+				}},
+			})
+			if err != nil {
+				t.Fatalf("NewResult() error = %v", err)
+			}
+			if result.Summary.DriftedCount != 1 || result.Summary.SuccessCount != 0 {
+				t.Fatalf("summary = %+v, want one drifted and no successful actions", result.Summary)
+			}
+			if got := result.Actions[0]; !got.Attempted || got.Reconciliation != ReconciliationNotRequired {
+				t.Fatalf("staged drift = %#v, want attempted known drift without reconciliation", got)
+			}
+		})
+	}
+
+	invalid := []ActionResult{
+		{
+			ActionID:  testActionID(t, "attempted-drift-without-recovery"),
+			Kind:      ActionTrashPath,
+			Outcome:   OutcomeDrifted,
+			Attempted: true,
+		},
+		{
+			ActionID:  testActionID(t, "retained-drift-without-handle"),
+			Kind:      ActionTrashPath,
+			Outcome:   OutcomeDrifted,
+			Attempted: true,
+			Recovery:  RecoveryRetained,
+		},
+		{
+			ActionID: testActionID(t, "restored-drift-before-attempt"),
+			Kind:     ActionTrashPath,
+			Outcome:  OutcomeDrifted,
+			Recovery: RecoveryRestored,
+		},
+	}
+	for _, action := range invalid {
+		if _, err := NewResult(Result{
+			SchemaVersion: SchemaVersionV1,
+			PlanDigest:    testDigest(t, 18),
+			RunID:         testRunID(t),
+			Actions:       []ActionResult{action},
+		}); err == nil {
+			t.Fatalf("NewResult() accepted invalid staged-drift state: %#v", action)
+		}
+	}
+}
+
 func TestRecoveryHandleRetainsOnlyTypedRelativeAuthority(t *testing.T) {
 	path, err := pathbytes.New([][]byte{[]byte("application"), []byte("cache")})
 	if err != nil {
