@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/biendo27/linux-deep-clean/internal/domain"
+	"github.com/biendo27/linux-deep-clean/internal/mounts"
 	"github.com/biendo27/linux-deep-clean/internal/pathbytes"
 	"golang.org/x/sys/unix"
 )
@@ -31,13 +32,36 @@ const privateStagingDirectoryMask = baselineFilesystemMask
 // directory. Its fields are deliberately private: a caller cannot turn an
 // arbitrary ParentLease into mutation authority by constructing this value.
 //
-// The current foundation creates these leases only inside linuxfs. A later
-// engine/helper integration must provide the private layout authority before
-// it exposes irreversible staging to another package.
+// Layout-backed leases are created only from an engine/helper-attested
+// LayoutPrivateStaging authority. The legacy parent-backed constructor stays
+// package-private while the safety foundation is migrated; neither form
+// grants irreversible-removal authority.
 type PrivateStagingLease struct {
-	parent   *ParentLease
-	rootID   domain.TrustedRootID
-	expected domain.FilesystemSnapshot
+	parent    *ParentLease
+	directory *PrivateDirectoryLease
+	rootID    domain.TrustedRootID
+	expected  domain.FilesystemSnapshot
+}
+
+// OpenPrivateStaging converts the one qualified private-staging layout into
+// nominal staging authority. It accepts no caller path or raw descriptor and
+// requalifies the layout before every stage operation.
+func OpenPrivateStaging(layout *mounts.LayoutLease) (*PrivateStagingLease, error) {
+	return openPrivateStagingWithSource(layout)
+}
+
+func openPrivateStagingWithSource(source privateDirectorySource) (*PrivateStagingLease, error) {
+	if source == nil {
+		return nil, fmt.Errorf("%w: trusted private staging layout is required", ErrUnsupported)
+	}
+	if source.Kind() != mounts.LayoutPrivateStaging {
+		return nil, fmt.Errorf("%w: layout kind %q is not private staging", ErrUnsupported, source.Kind())
+	}
+	directory, err := openPrivateDirectoryWithSource(source)
+	if err != nil {
+		return nil, err
+	}
+	return &PrivateStagingLease{directory: directory, rootID: directory.RootID()}, nil
 }
 
 // newPrivateStagingLease is intentionally package-private until an
@@ -70,11 +94,26 @@ func newPrivateStagingLease(parent *ParentLease) (*PrivateStagingLease, error) {
 // It rechecks the directory's private ownership, exact permissions, stable
 // identity, and trusted-root binding before a rename can use it.
 func (lease *PrivateStagingLease) duplicate() (int, error) {
-	if lease == nil || lease.parent == nil {
+	if lease == nil {
 		return -1, fmt.Errorf("%w: qualified private staging lease is required", ErrUnsupported)
 	}
 	if err := lease.rootID.Validate(); err != nil {
 		return -1, fmt.Errorf("%w: private staging root identity: %v", ErrUnsupported, err)
+	}
+	if lease.directory != nil {
+		if lease.parent != nil {
+			return -1, fmt.Errorf("%w: private staging lease has conflicting authorities", ErrUnsupported)
+		}
+		if lease.directory.RootID() != lease.rootID {
+			return -1, fmt.Errorf("%w: private staging root identity changed", ErrDrifted)
+		}
+		if lease.directory.Kind() != mounts.LayoutPrivateStaging {
+			return -1, fmt.Errorf("%w: private staging layout kind changed", ErrDrifted)
+		}
+		return lease.directory.duplicate()
+	}
+	if lease.parent == nil {
+		return -1, fmt.Errorf("%w: qualified private staging lease is required", ErrUnsupported)
 	}
 	if lease.parent.RootID() != lease.rootID {
 		return -1, fmt.Errorf("%w: private staging root identity changed", ErrDrifted)
@@ -100,6 +139,10 @@ func (lease *PrivateStagingLease) duplicate() (int, error) {
 	}
 	keepFD = true
 	return fd, nil
+}
+
+func (lease *PrivateStagingLease) isQualified() bool {
+	return lease != nil && (lease.parent != nil) != (lease.directory != nil)
 }
 
 func snapshotPrivateStagingDirectory(fd int) (domain.FilesystemSnapshot, error) {
@@ -435,7 +478,7 @@ func validateStageRequest(
 	expected domain.FilesystemPrecondition,
 	hooks stageHooks,
 ) (domain.FilesystemPrecondition, error) {
-	if source == nil || staging == nil || staging.parent == nil {
+	if source == nil || !staging.isQualified() {
 		return domain.FilesystemPrecondition{}, fmt.Errorf("%w: source and qualified private staging leases are required", ErrUnsupported)
 	}
 	if err := validateBasename(sourceBasename); err != nil {

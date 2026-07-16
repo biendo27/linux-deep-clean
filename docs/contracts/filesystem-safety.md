@@ -31,6 +31,31 @@ An unqualified root, unsupported kernel/filesystem/layout, missing fixed-local
 attestation, or lost evidence is unsupported or drifted. There is no
 `realpath`, prefix, copy-delete, or string-path fallback.
 
+## Layout-backed private directories
+
+An engine/helper registry may bind one fixed layout kind to one trusted source
+root. The binding is an opaque `root ID + layout kind` lookup, not a path or a
+caller UID: it requalifies the held root, opens a configured directory, and
+requires the directory's namespace, complete mount record, device, inode,
+owner, and mode to match captured evidence. A layout on a different mount is
+unsupported even when its root ID text matches. Only `linuxfs` may turn the
+resulting layout lease into an internal descriptor operation lease. Each
+private operation reacquires a descriptor only after requalifying both the
+held source root and fixed layout evidence; closing either lease prevents later
+operations from deriving fresh authority.
+
+Private state, staging, and quarantine layout kinds must be executor-owned
+with exact mode `0700`. `PublishFileDurable` accepts only such an opaque lease
+and one validated basename. It performs a preflight directory sync, creates a
+new `0600` regular file with `O_CREAT|O_EXCL|O_NOFOLLOW`, writes and syncs the
+file, closes it, syncs the directory, then reopens the basename with the
+required `openat2` constraints to confirm the published identity and exact
+bytes. A collision, hostile name, unsupported sync, byte mismatch, or layout
+drift never overwrites a record. Any error after creation retains the record
+and reports interruption/reconciliation instead of deleting or claiming durable
+completion. Replacement publication is not implemented: it needs an owned
+durable intent record and separate crash reconciliation semantics.
+
 ## Descriptor algorithm
 
 `ResolveParent` accepts a trusted-root lease and a validated relative
@@ -69,15 +94,14 @@ post-move verification step; ctime remains a pre-move freshness check.
 
 `StageNoReplace` requires an opaque, qualified private same-mount staging
 lease, not merely another parent directory lease, and uses `RENAME_NOREPLACE`.
-The current foundation accepts only a stable, executor-owned exact-`0700`
-directory that is bound to the same trusted root. Its constructor remains
-internal until an engine/helper-owned layout registry can provide that
-authority. Staging reopens the token and compares post-move identity. If
-verification fails, the staged object is retained and reports both drift and
-retention; it exposes no generic delete capability. `RestoreNoReplace` first
-revalidates the staged object and never overwrites an occupied original name.
-Unknown rename/restore outcomes are interrupted and require reconciliation,
-not a blind retry.
+The layout-registry contract now exists, but no production staging layout is
+registered or enabled; the legacy constructor remains internal while the
+engine/helper composition and supported-layout survey are incomplete. Staging
+reopens the token and compares post-move identity. If verification fails, the
+staged object is retained and reports both drift and retention; it exposes no
+generic delete capability. `RestoreNoReplace` first revalidates the staged
+object and never overwrites an occupied original name. Unknown rename/restore
+outcomes are interrupted and require reconciliation, not a blind retry.
 
 Directory descriptors used for durability are syncable. A required directory
 sync failure means durable completion is not claimed; unsupported descriptor or
@@ -92,8 +116,12 @@ namespace, removal returns `unsupported` and retains the staged object.
 
 The layer prevents traversal outside held descriptors and rejects cross-mount
 resolution. It does not make a malicious same-UID actor trustworthy: that
-actor can disrupt caller-owned staging. The safe response is drift, retention,
-or reconciliation; never deletion of uncertain content.
+actor can disrupt caller-owned staging or records. Final publication checks
+compare the name-bound descriptor and bytes at a point in time, but Linux does
+not make a same-UID private directory an exclusive content-integrity boundary:
+that actor can replace a name or modify content immediately after any check,
+including before return. The safe response to detected disruption is drift,
+retention, or reconciliation; never deletion of uncertain content.
 
 The default suite exercises only test-owned temporary roots. It does not mount
 filesystems or perform privileged work. Real ext4/XFS/Btrfs race and mount

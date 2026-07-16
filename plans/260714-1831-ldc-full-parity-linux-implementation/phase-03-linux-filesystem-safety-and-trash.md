@@ -53,10 +53,12 @@ match: FD-walk removal OR finalize Trash/quarantine durability
 
 ### Planned interface/function/type checklist
 
-- [ ] `mounts.RootAuthority`, `OpenTrustedRoot`, `RootLease.Close`, `InspectMount`, `CheckSupportedFilesystem`, `CheckMountNamespace`; registry implementations remain engine/helper-owned, not provider-owned.
-- [ ] `linuxfs.ResolveParent(lease, BytePath) (ParentLease, basename)`, `OpenTargetHandle`, `SnapshotFD`, `RequiredStatMask(ActionKind)`, `ComparePrecondition`.
-- [ ] `linuxfs.StageNoReplace`, `VerifyStagedIdentity`, `RestoreNoReplace`, `RemoveStagedTree`, `VerifyPostcondition`; mismatch API exposes no delete operation.
-- [ ] `linuxfs.PublishFileDurable` and `ReplaceFileDurable` accept only a held private-directory FD plus one basename, use no-follow/no-replace semantics as requested, and fsync file and directory; Phase 4 state may reuse them.
+- [x] `mounts.RootAuthority`, `OpenTrustedRoot`, `RootLease.Close`, `InspectMount`, `CheckSupportedFilesystem`, `CheckMountNamespace`; registry implementations remain engine/helper-owned, not provider-owned.
+- [x] `mounts.LayoutAuthority`, `OpenTrustedLayout`, and opaque layout leases bind one source root plus fixed layout kind to a same-mount directory without path authority.
+- [x] `linuxfs.ResolveParent(lease, BytePath) (ParentLease, basename)`, `OpenTargetHandle`, `SnapshotFD`, `RequiredStatMask(ActionKind)`, `ComparePrecondition`.
+- [x] `linuxfs.OpenPrivateStaging`, `StageNoReplace`, `VerifyStagedIdentity`, `RestoreNoReplace`, and `RemoveStagedTree`; public staging consumes only a requalified `LayoutPrivateStaging` lease, and the mismatch API exposes no delete operation. `VerifyPostcondition` remains pending with an executor-owned action contract.
+- [x] `linuxfs.PublishFileDurable` accepts only a held private-directory lease plus one basename, uses no-follow/no-replace semantics, verifies the final entry identity and bytes, and syncs file and directory. `ReplaceFileDurable` remains blocked on a durable intent/reconciliation design.
+- [x] `mounts.TrashAuthority`, `TrashRegistry`, `OpenTrustedTrash`, and `linuxfs.OpenTrashDirectories` bind an engine/helper-selected descriptor bundle and lend only requalified `files`/`info` duplicates to `linuxfs`; `PublishTrashInfoDurable` durably publishes one bounded LDC metadata record. This is a pre-selector foundation, not FDO topology validation, token reservation, content move, restoration, or reconciliation.
 - [ ] `trash.SelectTrashRoot`, `ValidateTrashLayout`, `ReserveTrashToken`, `WriteTrashInfoDurable`, `MoveToTrash`, `RestoreFromTrash`, `ReconcileTrashOrphans`.
 - [ ] `quarantine.OpenPerMountQuarantine`, `Retain`, `RestoreNoReplace`, `ApplyRetention`, `ReconcileRetained`; retention removal still uses verified staged-tree primitives.
 - [ ] `domain.RecoveryHandle` identifies root/token/original `BytePath`/date without absolute-path authority; `domain.ActionResult` distinguishes restored, retained, drifted, interrupted, and indeterminate outcomes.

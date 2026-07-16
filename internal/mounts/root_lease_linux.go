@@ -15,7 +15,8 @@ import (
 // duplicate is caller-owned and must be closed by the downstream lease. The
 // root lease itself never makes an untracked duplicate.
 type RootLease struct {
-	rootID domain.TrustedRootID
+	rootID   domain.TrustedRootID
+	expected RootExpectation
 
 	mu     sync.Mutex
 	fd     int
@@ -179,7 +180,7 @@ func openTrustedRootWith(registry Registry, rootID domain.TrustedRootID, inspect
 		return nil, err
 	}
 
-	lease := &RootLease{rootID: rootID, fd: fd}
+	lease := &RootLease{rootID: rootID, expected: authority.Expected, fd: fd}
 	keepFD = true
 	return lease, nil
 }

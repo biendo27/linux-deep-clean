@@ -50,6 +50,15 @@ coverage:
 	$(GO_ENV) $(GO) test -mod=readonly -count=1 -covermode=atomic -coverprofile=coverage/planproto.out ./internal/planproto
 	$(GO_ENV) $(GO) tool cover -func=coverage/planproto.out | tee coverage/planproto.func
 	awk '/^total:/ { found = 1; percent = $$3; sub(/%$$/, "", percent); if (percent + 0 < 90) { printf "internal/planproto coverage %s is below 90%%\n", $$3; exit 1 } } END { if (!found) { print "internal/planproto coverage total is missing"; exit 1 } }' coverage/planproto.func
+	$(GO_ENV) $(GO) test -mod=readonly -count=1 -covermode=atomic -coverprofile=coverage/mounts.out ./internal/mounts
+	$(GO_ENV) $(GO) tool cover -func=coverage/mounts.out | tee coverage/mounts.func
+	awk '/^total:/ { found = 1; percent = $$3; sub(/%$$/, "", percent); if (percent + 0 < 90) { printf "internal/mounts coverage %s is below 90%%\n", $$3; exit 1 } } END { if (!found) { print "internal/mounts coverage total is missing"; exit 1 } }' coverage/mounts.func
+	$(GO_ENV) $(GO) test -mod=readonly -count=1 -covermode=atomic -coverprofile=coverage/linuxfs.out ./internal/linuxfs
+	$(GO_ENV) $(GO) tool cover -func=coverage/linuxfs.out | tee coverage/linuxfs.func
+	awk '/^total:/ { found = 1; percent = $$3; sub(/%$$/, "", percent); if (percent + 0 < 90) { printf "internal/linuxfs coverage %s is below 90%%\n", $$3; exit 1 } } END { if (!found) { print "internal/linuxfs coverage total is missing"; exit 1 } }' coverage/linuxfs.func
+	$(GO_ENV) $(GO) test -mod=readonly -count=1 -covermode=atomic -coverprofile=coverage/trash.out ./internal/trash
+	$(GO_ENV) $(GO) tool cover -func=coverage/trash.out | tee coverage/trash.func
+	awk '/^total:/ { found = 1; percent = $$3; sub(/%$$/, "", percent); if (percent + 0 < 90) { printf "internal/trash coverage %s is below 90%%\n", $$3; exit 1 } } END { if (!found) { print "internal/trash coverage total is missing"; exit 1 } }' coverage/trash.func
 
 integration:
 	$(GO_ENV) $(GO) test -mod=readonly -tags=integration ./tests/integration -count=1

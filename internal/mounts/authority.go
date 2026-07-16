@@ -34,6 +34,16 @@ var (
 	// requested typed root ID.
 	ErrUnknownTrustedRoot = errors.New("mounts: unknown trusted root")
 
+	// ErrUnknownLayout means no engine/helper-owned layout has been registered
+	// for the held trusted root and fixed layout kind. It is never a cue to
+	// discover an arbitrary path or fall back to a caller-controlled location.
+	ErrUnknownLayout = errors.New("mounts: unknown trusted layout")
+
+	// ErrUnknownTrash means no engine/helper-owned complete Freedesktop Trash
+	// bundle is registered for the held trusted root. It must not trigger a
+	// HOME/XDG/.Trash discovery fallback.
+	ErrUnknownTrash = errors.New("mounts: unknown trusted Trash layout")
+
 	// ErrLeaseClosed prevents a lease from lending or deriving any new root
 	// descriptor after it has been closed.
 	ErrLeaseClosed = errors.New("mounts: trusted-root lease is closed")

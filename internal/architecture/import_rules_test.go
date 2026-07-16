@@ -59,6 +59,8 @@ func TestArchitectureImportAllowlists(t *testing.T) {
 	assertQuarantineImports(t, root, modulePath, standardImports)
 	assertFilesystemMutationBoundaries(t, root)
 	assertRootLeaseDuplicateBoundary(t, root, modulePath)
+	assertLayoutLeaseDuplicateBoundary(t, root, modulePath)
+	assertTrashLeaseDuplicateBoundary(t, root, modulePath)
 	assertProvidersAndPresentersDoNotImportSafetyLayer(t, root, modulePath)
 	assertCobraPresenterOnly(t, root)
 
@@ -147,6 +149,44 @@ func duplicate(root *mounts.RootLease) { _, _ = root.Duplicate() }
 	variables := mountsRootLeaseVariablesForScope(functionParameters(function.Type), function.Body, aliases, mountsImportPath)
 	if !isTrackedMountsRootLeaseReceiver(selector.X, variables, aliases, mountsImportPath) {
 		t.Error("mounts.RootLease.Duplicate receiver is not detected")
+	}
+}
+
+func TestLayoutLeaseDuplicateTrackingRequiresMountsLayoutLease(t *testing.T) {
+	const mountsImportPath = "example.test/project/internal/mounts"
+	file, err := parser.ParseFile(token.NewFileSet(), "layout_lease.go", strings.NewReader(`package safety
+import mounts "example.test/project/internal/mounts"
+func duplicate(layout *mounts.LayoutLease) { _, _ = layout.Duplicate() }
+`), 0)
+	if err != nil {
+		t.Fatalf("parse layout lease source: %v", err)
+	}
+
+	function := functionDeclarationNamed(t, file, "duplicate")
+	selector := functionSelectorNamed(t, function.Body, "Duplicate")
+	aliases := map[string]string{"mounts": mountsImportPath}
+	variables := mountsLayoutLeaseVariablesForScope(functionParameters(function.Type), function.Body, aliases, mountsImportPath)
+	if !isTrackedMountsLayoutLeaseReceiver(selector.X, variables, aliases, mountsImportPath) {
+		t.Error("mounts.LayoutLease.Duplicate receiver is not detected")
+	}
+}
+
+func TestTrashLeaseDuplicateTrackingRequiresMountsTrashLease(t *testing.T) {
+	const mountsImportPath = "example.test/project/internal/mounts"
+	file, err := parser.ParseFile(token.NewFileSet(), "trash_lease.go", strings.NewReader(`package safety
+import mounts "example.test/project/internal/mounts"
+func duplicate(trash *mounts.TrashLease) { _, _ = trash.Duplicate() }
+`), 0)
+	if err != nil {
+		t.Fatalf("parse trash lease source: %v", err)
+	}
+
+	function := functionDeclarationNamed(t, file, "duplicate")
+	selector := functionSelectorNamed(t, function.Body, "Duplicate")
+	aliases := map[string]string{"mounts": mountsImportPath}
+	variables := mountsTrashLeaseVariablesForScope(functionParameters(function.Type), function.Body, aliases, mountsImportPath)
+	if !isTrackedMountsTrashLeaseReceiver(selector.X, variables, aliases, mountsImportPath) {
+		t.Error("mounts.TrashLease.Duplicate receiver is not detected")
 	}
 }
 
@@ -1306,6 +1346,68 @@ func assertRootLeaseDuplicateBoundary(t *testing.T, root, modulePath string) {
 	}
 }
 
+// assertLayoutLeaseDuplicateBoundary applies the same raw-descriptor rule to
+// engine/helper-owned recovery layouts. Only linuxfs may convert a qualified
+// layout lease into its internal descriptor-rooted operation lease.
+func assertLayoutLeaseDuplicateBoundary(t *testing.T, root, modulePath string) {
+	t.Helper()
+
+	mountsImportPath := modulePath + "/" + mountsPackagePath
+	for _, directory := range []string{"cmd", "internal"} {
+		forEachProductionGoFile(t, root, directory, func(path string, file *ast.File) {
+			if filepath.ToSlash(filepath.Dir(pathFromRoot(root, path))) == linuxfsPackagePath {
+				return
+			}
+
+			aliases := productionImportAliases(t, path, file)
+			globalLayouts := mountsLayoutLeaseVariablesAtFileScope(file, aliases, mountsImportPath)
+			forEachFunctionScope(file, func(parameters []*ast.Field, body *ast.BlockStmt) {
+				layouts := mountsLayoutLeaseVariablesForScope(parameters, body, aliases, mountsImportPath)
+				addVariableObjects(layouts, globalLayouts)
+				inspectFunctionScope(body, func(node ast.Node) bool {
+					selector, ok := node.(*ast.SelectorExpr)
+					if !ok || selector.Sel.Name != "Duplicate" || !isTrackedMountsLayoutLeaseReceiver(selector.X, layouts, aliases, mountsImportPath) {
+						return true
+					}
+					t.Errorf("%s calls mounts.LayoutLease.Duplicate; only %s may obtain a raw recovery-layout descriptor", pathFromRoot(root, path), linuxfsPackagePath)
+					return true
+				})
+			})
+		})
+	}
+}
+
+// assertTrashLeaseDuplicateBoundary keeps Freedesktop Trash files/info
+// descriptor pairs inside the rooted filesystem layer. Trash policy may select
+// a trusted bundle but must not obtain raw descriptors itself.
+func assertTrashLeaseDuplicateBoundary(t *testing.T, root, modulePath string) {
+	t.Helper()
+
+	mountsImportPath := modulePath + "/" + mountsPackagePath
+	for _, directory := range []string{"cmd", "internal"} {
+		forEachProductionGoFile(t, root, directory, func(path string, file *ast.File) {
+			if filepath.ToSlash(filepath.Dir(pathFromRoot(root, path))) == linuxfsPackagePath {
+				return
+			}
+
+			aliases := productionImportAliases(t, path, file)
+			globalTrashLeases := mountsTrashLeaseVariablesAtFileScope(file, aliases, mountsImportPath)
+			forEachFunctionScope(file, func(parameters []*ast.Field, body *ast.BlockStmt) {
+				trashLeases := mountsTrashLeaseVariablesForScope(parameters, body, aliases, mountsImportPath)
+				addVariableObjects(trashLeases, globalTrashLeases)
+				inspectFunctionScope(body, func(node ast.Node) bool {
+					selector, ok := node.(*ast.SelectorExpr)
+					if !ok || selector.Sel.Name != "Duplicate" || !isTrackedMountsTrashLeaseReceiver(selector.X, trashLeases, aliases, mountsImportPath) {
+						return true
+					}
+					t.Errorf("%s calls mounts.TrashLease.Duplicate; only %s may obtain raw Trash files/info descriptors", pathFromRoot(root, path), linuxfsPackagePath)
+					return true
+				})
+			})
+		})
+	}
+}
+
 func mountsRootLeaseVariablesAtFileScope(file *ast.File, aliases map[string]string, mountsImportPath string) map[*ast.Object]struct{} {
 	variables := make(map[*ast.Object]struct{})
 	for _, declaration := range file.Decls {
@@ -1391,6 +1493,188 @@ func isMountsRootLeaseType(expression ast.Expr, aliases map[string]string, mount
 	}
 	selector, ok := expression.(*ast.SelectorExpr)
 	if !ok || selector.Sel.Name != "RootLease" {
+		return false
+	}
+	packageName, ok := selector.X.(*ast.Ident)
+	return ok && aliases[packageName.Name] == mountsImportPath
+}
+
+func mountsLayoutLeaseVariablesAtFileScope(file *ast.File, aliases map[string]string, mountsImportPath string) map[*ast.Object]struct{} {
+	variables := make(map[*ast.Object]struct{})
+	for _, declaration := range file.Decls {
+		general, ok := declaration.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, specification := range general.Specs {
+			value, ok := specification.(*ast.ValueSpec)
+			if ok && isMountsLayoutLeaseType(value.Type, aliases, mountsImportPath) {
+				addNamedIdentifiers(variables, value.Names)
+			}
+		}
+	}
+	return variables
+}
+
+func mountsLayoutLeaseVariablesForScope(parameters []*ast.Field, body *ast.BlockStmt, aliases map[string]string, mountsImportPath string) map[*ast.Object]struct{} {
+	variables := make(map[*ast.Object]struct{})
+	for _, parameter := range parameters {
+		if isMountsLayoutLeaseType(parameter.Type, aliases, mountsImportPath) {
+			addNamedIdentifiers(variables, parameter.Names)
+		}
+	}
+
+	inspectFunctionScope(body, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.ValueSpec:
+			if isMountsLayoutLeaseType(node.Type, aliases, mountsImportPath) {
+				addNamedIdentifiers(variables, node.Names)
+			}
+			for valueIndex, value := range node.Values {
+				if !isMountsLayoutLeaseFactoryCall(value, aliases, mountsImportPath) {
+					continue
+				}
+				addFactoryValueSpecTarget(variables, node.Names, len(node.Values), valueIndex)
+			}
+		case *ast.AssignStmt:
+			for valueIndex, value := range node.Rhs {
+				if !isMountsLayoutLeaseFactoryCall(value, aliases, mountsImportPath) {
+					continue
+				}
+				addFactoryAssignmentTarget(variables, node.Lhs, len(node.Rhs), valueIndex)
+			}
+		}
+		return true
+	})
+
+	return variables
+}
+
+func isTrackedMountsLayoutLeaseReceiver(expression ast.Expr, variables map[*ast.Object]struct{}, aliases map[string]string, mountsImportPath string) bool {
+	if identifier, ok := expression.(*ast.Ident); ok {
+		_, tracked := variables[identifier.Obj]
+		return tracked
+	}
+	return isMountsLayoutLeaseType(expression, aliases, mountsImportPath)
+}
+
+func isMountsLayoutLeaseFactoryCall(expression ast.Expr, aliases map[string]string, mountsImportPath string) bool {
+	call, ok := expression.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "OpenTrustedLayout" {
+		return false
+	}
+	packageName, ok := selector.X.(*ast.Ident)
+	return ok && aliases[packageName.Name] == mountsImportPath
+}
+
+func isMountsLayoutLeaseType(expression ast.Expr, aliases map[string]string, mountsImportPath string) bool {
+	for {
+		parenthesized, ok := expression.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		expression = parenthesized.X
+	}
+	if pointer, ok := expression.(*ast.StarExpr); ok {
+		expression = pointer.X
+	}
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "LayoutLease" {
+		return false
+	}
+	packageName, ok := selector.X.(*ast.Ident)
+	return ok && aliases[packageName.Name] == mountsImportPath
+}
+
+func mountsTrashLeaseVariablesAtFileScope(file *ast.File, aliases map[string]string, mountsImportPath string) map[*ast.Object]struct{} {
+	variables := make(map[*ast.Object]struct{})
+	for _, declaration := range file.Decls {
+		general, ok := declaration.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, specification := range general.Specs {
+			value, ok := specification.(*ast.ValueSpec)
+			if ok && isMountsTrashLeaseType(value.Type, aliases, mountsImportPath) {
+				addNamedIdentifiers(variables, value.Names)
+			}
+		}
+	}
+	return variables
+}
+
+func mountsTrashLeaseVariablesForScope(parameters []*ast.Field, body *ast.BlockStmt, aliases map[string]string, mountsImportPath string) map[*ast.Object]struct{} {
+	variables := make(map[*ast.Object]struct{})
+	for _, parameter := range parameters {
+		if isMountsTrashLeaseType(parameter.Type, aliases, mountsImportPath) {
+			addNamedIdentifiers(variables, parameter.Names)
+		}
+	}
+
+	inspectFunctionScope(body, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.ValueSpec:
+			if isMountsTrashLeaseType(node.Type, aliases, mountsImportPath) {
+				addNamedIdentifiers(variables, node.Names)
+			}
+			for valueIndex, value := range node.Values {
+				if !isMountsTrashLeaseFactoryCall(value, aliases, mountsImportPath) {
+					continue
+				}
+				addFactoryValueSpecTarget(variables, node.Names, len(node.Values), valueIndex)
+			}
+		case *ast.AssignStmt:
+			for valueIndex, value := range node.Rhs {
+				if !isMountsTrashLeaseFactoryCall(value, aliases, mountsImportPath) {
+					continue
+				}
+				addFactoryAssignmentTarget(variables, node.Lhs, len(node.Rhs), valueIndex)
+			}
+		}
+		return true
+	})
+
+	return variables
+}
+
+func isTrackedMountsTrashLeaseReceiver(expression ast.Expr, variables map[*ast.Object]struct{}, aliases map[string]string, mountsImportPath string) bool {
+	if identifier, ok := expression.(*ast.Ident); ok {
+		_, tracked := variables[identifier.Obj]
+		return tracked
+	}
+	return isMountsTrashLeaseType(expression, aliases, mountsImportPath)
+}
+
+func isMountsTrashLeaseFactoryCall(expression ast.Expr, aliases map[string]string, mountsImportPath string) bool {
+	call, ok := expression.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "OpenTrustedTrash" {
+		return false
+	}
+	packageName, ok := selector.X.(*ast.Ident)
+	return ok && aliases[packageName.Name] == mountsImportPath
+}
+
+func isMountsTrashLeaseType(expression ast.Expr, aliases map[string]string, mountsImportPath string) bool {
+	for {
+		parenthesized, ok := expression.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		expression = parenthesized.X
+	}
+	if pointer, ok := expression.(*ast.StarExpr); ok {
+		expression = pointer.X
+	}
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "TrashLease" {
 		return false
 	}
 	packageName, ok := selector.X.(*ast.Ident)
