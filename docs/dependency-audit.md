@@ -1,6 +1,6 @@
 # Bootstrap toolchain and dependency audit
 
-Date: 2026-07-15
+Date: 2026-07-16
 
 ## Go toolchain
 
@@ -29,12 +29,13 @@ not by the default-lane source checks.
 
 ## Direct dependency
 
-Phase 2 has two direct runtime dependencies:
+Phase 3 has three direct runtime dependencies:
 
 | Module | Pin | Purpose | License / review |
 | --- | --- | --- | --- |
 | `github.com/fxamacker/cbor/v2` | [`v2.9.1`](https://github.com/fxamacker/cbor/releases/tag/v2.9.1) | RFC 8949 deterministic plan/result codec | MIT; release tag commit `63d1c6649d4235ae97b78c40888d9b2a0b426878`; confined by architecture tests to `internal/planproto` |
 | `github.com/spf13/cobra` | [`v1.10.2`](https://github.com/spf13/cobra/releases/tag/v1.10.2) | Bootstrap CLI parsing and help rendering | Apache-2.0; release tag commit `88b30ab89da2d0d0abb153818746c5a2d30eccec` |
+| `golang.org/x/sys` | [`v0.47.0`](https://github.com/golang/sys/releases/tag/v0.47.0) | Linux descriptor, `openat2`, `statx`, and `renameat2` bindings | BSD-3-Clause; release tag commit `9e7e939dcafac07e8ab4cffa6e5fc74908413f00`; requires Go 1.25 and is confined by architecture tests to `internal/mounts` and `internal/linuxfs` |
 
 Its Go module declares `go 1.15` and the audited transitive graph is pinned in
 `go.sum`. Cobra remains presenter-only; architecture tests reject it anywhere
@@ -46,6 +47,12 @@ raw-path import), while `internal/planproto` is the sole project package
 allowed to import `fxamacker/cbor/v2`. The codec uses an explicit deterministic
 encode profile and a bounded reject-first decode profile; a plan digest binds
 canonical bytes for audit and drift detection, never for authorization.
+
+`x/sys/unix` is not a general host-mutation capability: production imports are
+admitted only to the Phase 3 mount-qualification and rooted-filesystem safety
+packages. Architecture and default-lane contract tests reject it everywhere
+else, reject raw syscall/mount escapes, and continue to reject string-path
+mutation APIs globally.
 
 ## Vulnerability check
 

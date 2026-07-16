@@ -77,7 +77,7 @@ Later implementation may parallelize read-only adapters behind stable Phase 4 in
 |---:|---|---|---|
 | 1 | [Repository, toolchain, and contract harness](./phase-01-start.md) | Completed | Permanent remote/module selected; hermetic harness and import gates pass |
 | 2 | [Canonical domain and plan protocol](./phase-02-canonical-domain-and-plan-protocol.md) | Completed | BytePath, schema, deterministic CBOR/digest, and result states frozen |
-| 3 | [Linux filesystem safety and Trash](./phase-03-linux-filesystem-safety-and-trash.md) | Pending | Anchored staging, durability/reconciliation, and adversarial smoke gates pass |
+| 3 | [Linux filesystem safety and Trash](./phase-03-linux-filesystem-safety-and-trash.md) | In progress | Anchored staging, durability/reconciliation, and adversarial smoke gates pass |
 | 4 | [Policy engine, state, and recovery](./phase-04-policy-engine-state-and-recovery.md) | Pending | Deterministic planning, monotonic policy, private durable state, recovery pass |
 | 5 | [Provider discovery and read-only inventory](./phase-05-provider-discovery-and-read-only-inventory.md) | Pending | Supported provider parsers and inventory contracts pass without mutation |
 | 6 | [CLI, structured output, and TUI](./phase-06-cli-structured-output-and-tui.md) | Pending | Exact command/alias, schema, no-TTY, and presenter-authority gates pass |
@@ -90,6 +90,8 @@ Later implementation may parallelize read-only adapters behind stable Phase 4 in
 Phase 1 completion evidence: [bootstrap handoff report](./reports/pm-260715-2132-phase-1-bootstrap.md).
 
 Phase 2 completion evidence: [canonical protocol handoff report](./reports/pm-260716-1254-phase-2-canonical-protocol.md).
+
+Phase 3 safety-foundation evidence: [in-progress handoff report](./reports/pm-260716-phase-3-safety-foundation.md). The phase remains gated on an engine/helper-owned per-mount layout authority and disposable-VM qualification; no user filesystem mutation is enabled.
 
 ## Decision and Entry Gates
 

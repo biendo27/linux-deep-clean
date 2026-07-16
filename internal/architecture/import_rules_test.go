@@ -19,8 +19,12 @@ import (
 )
 
 const (
-	mainCommandPath   = "cmd/ldclean"
-	helperCommandPath = "cmd/linux-deep-clean-helper"
+	mainCommandPath       = "cmd/ldclean"
+	helperCommandPath     = "cmd/linux-deep-clean-helper"
+	mountsPackagePath     = "internal/mounts"
+	linuxfsPackagePath    = "internal/linuxfs"
+	trashPackagePath      = "internal/trash"
+	quarantinePackagePath = "internal/quarantine"
 )
 
 type listedPackage struct {
@@ -49,6 +53,13 @@ func TestArchitectureImportAllowlists(t *testing.T) {
 	assertPathbytesImports(t, root, standardImports)
 	assertDomainImports(t, root, modulePath, standardImports)
 	assertPlanprotoImports(t, root, modulePath, standardImports)
+	assertMountsImports(t, root, modulePath, standardImports)
+	assertLinuxFSImports(t, root, modulePath, standardImports)
+	assertTrashImports(t, root, modulePath, standardImports)
+	assertQuarantineImports(t, root, modulePath, standardImports)
+	assertFilesystemMutationBoundaries(t, root)
+	assertRootLeaseDuplicateBoundary(t, root, modulePath)
+	assertProvidersAndPresentersDoNotImportSafetyLayer(t, root, modulePath)
 	assertCobraPresenterOnly(t, root)
 
 	mainPackages, mainListed := listMainCommandDependencies(t, root)
@@ -60,6 +71,118 @@ func TestArchitectureImportAllowlists(t *testing.T) {
 	if helperListed {
 		assertHelperDependencies(t, modulePath, helperPackages)
 	}
+}
+
+func TestFilesystemSafetyEscapeHatchesAreForbidden(t *testing.T) {
+	for _, selector := range []string{"RawSyscall", "RawSyscall6", "RawSyscallNoError", "Syscall", "Syscall6", "SyscallNoError"} {
+		if _, forbidden := forbiddenUnixEscapeSelectors[selector]; !forbidden {
+			t.Errorf("unix.%s is not covered by the filesystem-safety escape-hatch gate", selector)
+		}
+	}
+	for _, selector := range []string{"Open", "OpenFile", "Create", "NewFile"} {
+		if _, forbidden := bootstrapForbiddenOSSelectors[selector]; !forbidden {
+			t.Errorf("os.%s is not covered by the production descriptor-authority gate", selector)
+		}
+	}
+}
+
+func TestProductionOSFileMutationTrackingIsTypeScoped(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "file_mutation.go", strings.NewReader(`package safety
+import "os"
+type writer interface { Write([]byte) (int, error) }
+func mutate(file *os.File) {
+	_, _ = file.Write(nil)
+	{
+		file := writer(nil)
+		_, _ = file.Write(nil)
+	}
+}
+func digest(file writer) { _, _ = file.Write(nil) }
+func mutateValue(file os.File) { _, _ = file.Write(nil) }
+`), 0)
+	if err != nil {
+		t.Fatalf("parse source: %v", err)
+	}
+
+	aliases := map[string]string{"os": "os"}
+	mutate := functionDeclarationNamed(t, file, "mutate")
+	mutateSelectors := functionSelectorsNamed(mutate.Body, "Write")
+	if len(mutateSelectors) != 2 {
+		t.Fatalf("found %d Write selectors in mutate, want 2", len(mutateSelectors))
+	}
+	variables := osFileVariablesForScope(functionParameters(mutate.Type), mutate.Body, aliases)
+	if !isTrackedOSFileReceiver(mutateSelectors[0].X, variables, aliases) {
+		t.Error("typed *os.File mutation receiver is not detected")
+	}
+	if isTrackedOSFileReceiver(mutateSelectors[1].X, variables, aliases) {
+		t.Error("a shadowed non-file Write receiver is mistaken for *os.File")
+	}
+
+	digest := functionDeclarationNamed(t, file, "digest")
+	digestSelector := functionSelectorNamed(t, digest.Body, "Write")
+	if isTrackedOSFileReceiver(digestSelector.X, osFileVariablesForScope(functionParameters(digest.Type), digest.Body, aliases), aliases) {
+		t.Error("unrelated Write receiver is mistaken for *os.File")
+	}
+
+	mutateValue := functionDeclarationNamed(t, file, "mutateValue")
+	mutateValueSelector := functionSelectorNamed(t, mutateValue.Body, "Write")
+	if !isTrackedOSFileReceiver(mutateValueSelector.X, osFileVariablesForScope(functionParameters(mutateValue.Type), mutateValue.Body, aliases), aliases) {
+		t.Error("addressable os.File mutation receiver is not detected")
+	}
+}
+
+func TestRootLeaseDuplicateTrackingRequiresMountsRootLease(t *testing.T) {
+	const mountsImportPath = "example.test/project/internal/mounts"
+	file, err := parser.ParseFile(token.NewFileSet(), "root_lease.go", strings.NewReader(`package safety
+import mounts "example.test/project/internal/mounts"
+func duplicate(root *mounts.RootLease) { _, _ = root.Duplicate() }
+`), 0)
+	if err != nil {
+		t.Fatalf("parse source: %v", err)
+	}
+
+	function := functionDeclarationNamed(t, file, "duplicate")
+	selector := functionSelectorNamed(t, function.Body, "Duplicate")
+	aliases := map[string]string{"mounts": mountsImportPath}
+	variables := mountsRootLeaseVariablesForScope(functionParameters(function.Type), function.Body, aliases, mountsImportPath)
+	if !isTrackedMountsRootLeaseReceiver(selector.X, variables, aliases, mountsImportPath) {
+		t.Error("mounts.RootLease.Duplicate receiver is not detected")
+	}
+}
+
+func functionDeclarationNamed(t *testing.T, file *ast.File, name string) *ast.FuncDecl {
+	t.Helper()
+
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Name.Name == name {
+			return function
+		}
+	}
+	t.Fatalf("function %q not found", name)
+	return nil
+}
+
+func functionSelectorNamed(t *testing.T, body *ast.BlockStmt, name string) *ast.SelectorExpr {
+	t.Helper()
+
+	selectors := functionSelectorsNamed(body, name)
+	if len(selectors) == 0 {
+		t.Fatalf("selector %q not found", name)
+	}
+	return selectors[0]
+}
+
+func functionSelectorsNamed(body *ast.BlockStmt, name string) []*ast.SelectorExpr {
+	var selectors []*ast.SelectorExpr
+	ast.Inspect(body, func(node ast.Node) bool {
+		selector, ok := node.(*ast.SelectorExpr)
+		if ok && selector.Sel.Name == name {
+			selectors = append(selectors, selector)
+		}
+		return true
+	})
+	return selectors
 }
 
 func standardLibraryImports(t *testing.T) map[string]struct{} {
@@ -460,6 +583,99 @@ func assertPlanprotoImports(t *testing.T, root, modulePath string, standardImpor
 	})
 }
 
+func assertMountsImports(t *testing.T, root, modulePath string, standardImports map[string]struct{}) {
+	t.Helper()
+
+	assertSafetyPackageImports(t, root, mountsPackagePath, standardImports, map[string]struct{}{
+		modulePath + "/internal/domain":    {},
+		modulePath + "/internal/pathbytes": {},
+		"golang.org/x/sys/unix":            {},
+	})
+}
+
+func assertLinuxFSImports(t *testing.T, root, modulePath string, standardImports map[string]struct{}) {
+	t.Helper()
+
+	assertSafetyPackageImports(t, root, linuxfsPackagePath, standardImports, map[string]struct{}{
+		modulePath + "/internal/domain":    {},
+		modulePath + "/internal/mounts":    {},
+		modulePath + "/internal/pathbytes": {},
+		"golang.org/x/sys/unix":            {},
+	})
+}
+
+func assertTrashImports(t *testing.T, root, modulePath string, standardImports map[string]struct{}) {
+	t.Helper()
+
+	assertSafetyPackageImports(t, root, trashPackagePath, standardImports, map[string]struct{}{
+		modulePath + "/internal/domain":    {},
+		modulePath + "/internal/linuxfs":   {},
+		modulePath + "/internal/mounts":    {},
+		modulePath + "/internal/pathbytes": {},
+	})
+}
+
+func assertQuarantineImports(t *testing.T, root, modulePath string, standardImports map[string]struct{}) {
+	t.Helper()
+
+	assertSafetyPackageImports(t, root, quarantinePackagePath, standardImports, map[string]struct{}{
+		modulePath + "/internal/domain":    {},
+		modulePath + "/internal/linuxfs":   {},
+		modulePath + "/internal/mounts":    {},
+		modulePath + "/internal/pathbytes": {},
+	})
+}
+
+func assertSafetyPackageImports(t *testing.T, root, packagePath string, standardImports, allowedImports map[string]struct{}) {
+	t.Helper()
+
+	forEachProductionGoFile(t, root, packagePath, func(path string, file *ast.File) {
+		for _, importSpec := range file.Imports {
+			importPath, ok := importPathOf(t, path, importSpec)
+			if !ok {
+				continue
+			}
+			if _, standard := standardImports[importPath]; standard {
+				continue
+			}
+			if _, allowed := allowedImports[importPath]; !allowed {
+				t.Errorf("%s: %s may import only its explicit safety-layer dependencies; found %q", pathFromRoot(root, path), packagePath, importPath)
+				continue
+			}
+			if importPath == "golang.org/x/sys/unix" && importSpec.Name != nil {
+				t.Errorf("%s: %s must import golang.org/x/sys/unix without an alias so raw syscall use remains auditable", pathFromRoot(root, path), packagePath)
+			}
+		}
+	})
+}
+
+func assertProvidersAndPresentersDoNotImportSafetyLayer(t *testing.T, root, modulePath string) {
+	t.Helper()
+
+	for _, directory := range []string{"internal/providers", "internal/presenters"} {
+		forEachProductionGoFile(t, root, directory, func(path string, file *ast.File) {
+			for _, importSpec := range file.Imports {
+				importPath, ok := importPathOf(t, path, importSpec)
+				if !ok {
+					continue
+				}
+				if isSafetyLayerImport(modulePath, importPath) {
+					t.Errorf("%s imports %q; providers and presenters cannot obtain filesystem mutation authority", pathFromRoot(root, path), importPath)
+				}
+			}
+		})
+	}
+}
+
+func isSafetyLayerImport(modulePath, importPath string) bool {
+	for _, packagePath := range []string{mountsPackagePath, linuxfsPackagePath, trashPackagePath, quarantinePackagePath} {
+		if importPath == modulePath+"/"+packagePath {
+			return true
+		}
+	}
+	return false
+}
+
 func assertNoExecutableShellScripts(t *testing.T, root string) {
 	t.Helper()
 
@@ -596,6 +812,8 @@ var bootstrapForbiddenOSSelectors = map[string]string{
 	"Mkdir":        "host directory creation",
 	"MkdirAll":     "host directory creation",
 	"MkdirTemp":    "host directory creation",
+	"NewFile":      "raw descriptor authority",
+	"Open":         "raw descriptor authority",
 	"OpenFile":     "host file mutation",
 	"Process":      "host process control",
 	"Remove":       "host file removal",
@@ -628,7 +846,7 @@ func assertBootstrapRuntimeSafety(t *testing.T, root string) {
 				if !ok {
 					continue
 				}
-				if reason, forbidden := bootstrapForbiddenRuntimeImports[importPath]; forbidden {
+				if reason, forbidden := bootstrapForbiddenRuntimeImports[importPath]; forbidden && !(importPath == "golang.org/x/sys/unix" && isUnixFilesystemSafetySource(root, path)) {
 					t.Errorf("%s imports %q for %s; Phase 1 production code must remain offline, process-free, and non-mutating", pathFromRoot(root, path), importPath, reason)
 				}
 
@@ -645,12 +863,14 @@ func assertBootstrapRuntimeSafety(t *testing.T, root string) {
 				}
 			}
 
+			utsnameVariables := unixUtsnameVariables(file, aliases)
+			assertNoProductionOSFileMutations(t, root, path, file, aliases)
 			ast.Inspect(file, func(node ast.Node) bool {
 				selector, ok := node.(*ast.SelectorExpr)
 				if !ok {
 					return true
 				}
-				if reason, forbidden := bootstrapForbiddenProcessMethods[selector.Sel.Name]; forbidden {
+				if reason, forbidden := bootstrapForbiddenProcessMethods[selector.Sel.Name]; forbidden && !isUnixUtsnameReleaseField(selector, utsnameVariables) {
 					t.Errorf("%s references .%s for %s; Phase 1 production code must remain offline, process-free, and non-mutating", pathFromRoot(root, path), selector.Sel.Name, reason)
 				}
 				packageName, ok := selector.X.(*ast.Ident)
@@ -664,6 +884,537 @@ func assertBootstrapRuntimeSafety(t *testing.T, root string) {
 			})
 		})
 	}
+}
+
+var forbiddenOSFileMutationMethods = map[string]string{
+	"Chdir":       "host working-directory mutation",
+	"Chmod":       "host permission mutation",
+	"Chown":       "host ownership mutation",
+	"Truncate":    "host file mutation",
+	"Write":       "host file mutation",
+	"WriteAt":     "host file mutation",
+	"WriteString": "host file mutation",
+}
+
+// assertNoProductionOSFileMutations closes the remaining descriptor escape
+// hatch after direct os descriptor factories are forbidden. It deliberately
+// tracks only syntactically proven os.File bindings so unrelated values with
+// methods such as Write are not rejected.
+func assertNoProductionOSFileMutations(t *testing.T, root, path string, file *ast.File, aliases map[string]string) {
+	t.Helper()
+
+	globalFileVariables := osFileVariablesAtFileScope(file, aliases)
+	forEachFunctionScope(file, func(parameters []*ast.Field, body *ast.BlockStmt) {
+		fileVariables := osFileVariablesForScope(parameters, body, aliases)
+		addVariableObjects(fileVariables, globalFileVariables)
+		inspectFunctionScope(body, func(node ast.Node) bool {
+			selector, ok := node.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			reason, forbidden := forbiddenOSFileMutationMethods[selector.Sel.Name]
+			if !forbidden || !isTrackedOSFileReceiver(selector.X, fileVariables, aliases) {
+				return true
+			}
+			t.Errorf("%s invokes *os.File.%s for %s; production code may not mutate host files outside the rooted linuxfs API", pathFromRoot(root, path), selector.Sel.Name, reason)
+			return true
+		})
+	})
+}
+
+func forEachFunctionScope(file *ast.File, visit func([]*ast.Field, *ast.BlockStmt)) {
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Body == nil {
+			continue
+		}
+		visit(functionParameters(function.Type), function.Body)
+		forEachFunctionLiteralScope(function.Body, visit)
+	}
+}
+
+func forEachFunctionLiteralScope(body *ast.BlockStmt, visit func([]*ast.Field, *ast.BlockStmt)) {
+	inspectFunctionScope(body, func(node ast.Node) bool {
+		literal, ok := node.(*ast.FuncLit)
+		if !ok {
+			return true
+		}
+		visit(functionParameters(literal.Type), literal.Body)
+		forEachFunctionLiteralScope(literal.Body, visit)
+		return false
+	})
+}
+
+func functionParameters(functionType *ast.FuncType) []*ast.Field {
+	if functionType == nil || functionType.Params == nil {
+		return nil
+	}
+	return functionType.Params.List
+}
+
+func inspectFunctionScope(body *ast.BlockStmt, visit func(ast.Node) bool) {
+	ast.Inspect(body, func(node ast.Node) bool {
+		if _, nested := node.(*ast.FuncLit); nested {
+			return false
+		}
+		return visit(node)
+	})
+}
+
+func osFileVariablesAtFileScope(file *ast.File, aliases map[string]string) map[*ast.Object]struct{} {
+	variables := make(map[*ast.Object]struct{})
+	for _, declaration := range file.Decls {
+		general, ok := declaration.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, specification := range general.Specs {
+			value, ok := specification.(*ast.ValueSpec)
+			if ok && isOSFileType(value.Type, aliases) {
+				addNamedIdentifiers(variables, value.Names)
+			}
+		}
+	}
+	return variables
+}
+
+func osFileVariablesForScope(parameters []*ast.Field, body *ast.BlockStmt, aliases map[string]string) map[*ast.Object]struct{} {
+	variables := make(map[*ast.Object]struct{})
+	for _, parameter := range parameters {
+		if !isOSFileType(parameter.Type, aliases) {
+			continue
+		}
+		addNamedIdentifiers(variables, parameter.Names)
+	}
+
+	inspectFunctionScope(body, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.ValueSpec:
+			if isOSFileType(node.Type, aliases) {
+				addNamedIdentifiers(variables, node.Names)
+			}
+			for valueIndex, value := range node.Values {
+				if !isOSFileFactoryCall(value, aliases) {
+					continue
+				}
+				addFactoryValueSpecTarget(variables, node.Names, len(node.Values), valueIndex)
+			}
+		case *ast.AssignStmt:
+			for valueIndex, value := range node.Rhs {
+				if !isOSFileFactoryCall(value, aliases) {
+					continue
+				}
+				addFactoryAssignmentTarget(variables, node.Lhs, len(node.Rhs), valueIndex)
+			}
+		}
+		return true
+	})
+
+	return variables
+}
+
+func addFactoryAssignmentTarget(variables map[*ast.Object]struct{}, targets []ast.Expr, valueCount, valueIndex int) {
+	if len(targets) == 0 {
+		return
+	}
+
+	targetIndex := valueIndex
+	if valueCount == 1 {
+		targetIndex = 0
+	}
+	if targetIndex >= len(targets) {
+		return
+	}
+	identifier, ok := targets[targetIndex].(*ast.Ident)
+	if ok && identifier.Name != "_" && identifier.Obj != nil {
+		variables[identifier.Obj] = struct{}{}
+	}
+}
+
+func addFactoryValueSpecTarget(variables map[*ast.Object]struct{}, targets []*ast.Ident, valueCount, valueIndex int) {
+	if len(targets) == 0 {
+		return
+	}
+
+	targetIndex := valueIndex
+	if valueCount == 1 {
+		targetIndex = 0
+	}
+	if targetIndex >= len(targets) || targets[targetIndex].Name == "_" || targets[targetIndex].Obj == nil {
+		return
+	}
+	variables[targets[targetIndex].Obj] = struct{}{}
+}
+
+func addNamedIdentifiers(variables map[*ast.Object]struct{}, identifiers []*ast.Ident) {
+	for _, identifier := range identifiers {
+		if identifier.Name != "_" && identifier.Obj != nil {
+			variables[identifier.Obj] = struct{}{}
+		}
+	}
+}
+
+func addVariableObjects(destination, source map[*ast.Object]struct{}) {
+	for variable := range source {
+		destination[variable] = struct{}{}
+	}
+}
+
+func isOSFileFactoryCall(expression ast.Expr, aliases map[string]string) bool {
+	call, ok := expression.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	packageName, ok := selector.X.(*ast.Ident)
+	if !ok || aliases[packageName.Name] != "os" {
+		return false
+	}
+	_, factory := bootstrapForbiddenOSSelectors[selector.Sel.Name]
+	return factory && (selector.Sel.Name == "Open" || selector.Sel.Name == "OpenFile" || selector.Sel.Name == "Create" || selector.Sel.Name == "NewFile")
+}
+
+func isTrackedOSFileReceiver(expression ast.Expr, variables map[*ast.Object]struct{}, aliases map[string]string) bool {
+	if identifier, ok := expression.(*ast.Ident); ok {
+		_, tracked := variables[identifier.Obj]
+		return tracked
+	}
+	if selector, ok := expression.(*ast.SelectorExpr); ok {
+		packageName, ok := selector.X.(*ast.Ident)
+		if ok && aliases[packageName.Name] == "os" {
+			switch selector.Sel.Name {
+			case "Stdin", "Stdout", "Stderr":
+				return true
+			}
+		}
+	}
+	return isOSFileType(expression, aliases)
+}
+
+func isOSFileType(expression ast.Expr, aliases map[string]string) bool {
+	for {
+		parenthesized, ok := expression.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		expression = parenthesized.X
+	}
+
+	if pointer, ok := expression.(*ast.StarExpr); ok {
+		expression = pointer.X
+	}
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "File" {
+		return false
+	}
+	packageName, ok := selector.X.(*ast.Ident)
+	return ok && aliases[packageName.Name] == "os"
+}
+
+func isUnixFilesystemSafetySource(root, path string) bool {
+	packagePath := filepath.ToSlash(filepath.Dir(pathFromRoot(root, path)))
+	return packagePath == mountsPackagePath || packagePath == linuxfsPackagePath
+}
+
+func unixUtsnameVariables(file *ast.File, aliases map[string]string) map[string]struct{} {
+	variables := make(map[string]struct{})
+	ast.Inspect(file, func(node ast.Node) bool {
+		value, ok := node.(*ast.ValueSpec)
+		if !ok || len(value.Names) == 0 {
+			return true
+		}
+		typeSelector, ok := value.Type.(*ast.SelectorExpr)
+		if !ok || typeSelector.Sel.Name != "Utsname" {
+			return true
+		}
+		packageName, ok := typeSelector.X.(*ast.Ident)
+		if !ok || aliases[packageName.Name] != "golang.org/x/sys/unix" {
+			return true
+		}
+		for _, name := range value.Names {
+			variables[name.Name] = struct{}{}
+		}
+		return true
+	})
+	return variables
+}
+
+func isUnixUtsnameReleaseField(selector *ast.SelectorExpr, variables map[string]struct{}) bool {
+	if selector.Sel.Name != "Release" {
+		return false
+	}
+	identifier, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	_, known := variables[identifier.Name]
+	return known
+}
+
+var forbiddenUnixEscapeSelectors = map[string]string{
+	"Chroot":            "root-directory escape",
+	"Mount":             "mount mutation",
+	"MoveMount":         "mount mutation",
+	"OpenTree":          "mount-tree authority",
+	"PivotRoot":         "root-directory escape",
+	"RawSyscall":        "raw syscall escape",
+	"RawSyscall6":       "raw syscall escape",
+	"RawSyscallNoError": "raw syscall escape",
+	"Setns":             "mount-namespace mutation",
+	"Syscall":           "raw syscall escape",
+	"Syscall6":          "raw syscall escape",
+	"SyscallNoError":    "raw syscall escape",
+	"Unshare":           "mount-namespace mutation",
+	"Unmount":           "mount mutation",
+	"Unmount2":          "mount mutation",
+	"Fsopen":            "filesystem-context authority",
+	"Fsconfig":          "filesystem-context authority",
+	"Fsmount":           "filesystem-context authority",
+	"Fspick":            "filesystem-context authority",
+	"MountSetattr":      "mount mutation",
+	"NameToHandleAt":    "file-handle authority",
+	"OpenByHandleAt":    "file-handle authority",
+}
+
+var linuxFSOnlyUnixSelectors = map[string]string{
+	"Chmod":        "pathname mutation",
+	"Chown":        "pathname mutation",
+	"Creat":        "pathname creation",
+	"Fchmod":       "descriptor mutation",
+	"Fchmodat":     "pathname mutation",
+	"Fchown":       "descriptor mutation",
+	"Fchownat":     "pathname mutation",
+	"Fremovexattr": "descriptor mutation",
+	"Fsetxattr":    "descriptor mutation",
+	"Ftruncate":    "descriptor mutation",
+	"Futimesat":    "pathname mutation",
+	"Link":         "pathname mutation",
+	"Linkat":       "pathname mutation",
+	"Lremovexattr": "pathname mutation",
+	"Lsetxattr":    "pathname mutation",
+	"Mkdir":        "pathname creation",
+	"Mkdirat":      "pathname creation",
+	"Mknod":        "pathname creation",
+	"Mknodat":      "pathname creation",
+	"Open":         "pathname resolution",
+	"Openat":       "descriptor-relative resolution",
+	"Openat2":      "descriptor-relative resolution",
+	"Pwrite":       "descriptor mutation",
+	"Pwritev":      "descriptor mutation",
+	"Remove":       "pathname mutation",
+	"Removexattr":  "pathname mutation",
+	"Rename":       "pathname mutation",
+	"Renameat":     "descriptor-relative mutation",
+	"Renameat2":    "descriptor-relative mutation",
+	"Rmdir":        "pathname mutation",
+	"Setxattr":     "pathname mutation",
+	"Symlink":      "pathname creation",
+	"Symlinkat":    "pathname creation",
+	"Truncate":     "pathname mutation",
+	"Unlink":       "pathname mutation",
+	"Unlinkat":     "descriptor-relative mutation",
+	"Utimensat":    "pathname mutation",
+	"Write":        "descriptor mutation",
+	"Writev":       "descriptor mutation",
+}
+
+var forbiddenPathMutationSelectors = map[string]string{
+	"Remove":       "host pathname mutation",
+	"RemoveAll":    "host pathname mutation",
+	"Rename":       "host pathname mutation",
+	"EvalSymlinks": "string-path resolution",
+}
+
+// assertFilesystemMutationBoundaries reserves raw descriptor-relative
+// filesystem operations for linuxfs. Mount qualification can inspect held
+// descriptors, but it cannot mutate or resolve user targets. Every other
+// production package remains unable to bypass the safety layer.
+func assertFilesystemMutationBoundaries(t *testing.T, root string) {
+	t.Helper()
+
+	for _, directory := range []string{"cmd", "internal"} {
+		forEachProductionGoFile(t, root, directory, func(path string, file *ast.File) {
+			aliases := productionImportAliases(t, path, file)
+			isLinuxFS := filepath.ToSlash(filepath.Dir(pathFromRoot(root, path))) == linuxfsPackagePath
+
+			ast.Inspect(file, func(node ast.Node) bool {
+				selector, ok := node.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				packageName, ok := selector.X.(*ast.Ident)
+				if !ok {
+					return true
+				}
+
+				switch aliases[packageName.Name] {
+				case "golang.org/x/sys/unix":
+					if reason, forbidden := forbiddenUnixEscapeSelectors[selector.Sel.Name]; forbidden {
+						t.Errorf("%s references unix.%s for %s; no production package may bypass the filesystem safety model", pathFromRoot(root, path), selector.Sel.Name, reason)
+						return true
+					}
+					if reason, restricted := linuxFSOnlyUnixSelectors[selector.Sel.Name]; restricted && !isLinuxFS {
+						t.Errorf("%s references unix.%s for %s; only %s may issue raw filesystem operations", pathFromRoot(root, path), selector.Sel.Name, reason, linuxfsPackagePath)
+					}
+				case "os":
+					if reason, forbidden := forbiddenPathMutationSelectors[selector.Sel.Name]; forbidden {
+						t.Errorf("%s references os.%s for %s; use the rooted linuxfs API instead", pathFromRoot(root, path), selector.Sel.Name, reason)
+					}
+				case "path/filepath":
+					if reason, forbidden := forbiddenPathMutationSelectors[selector.Sel.Name]; forbidden {
+						t.Errorf("%s references filepath.%s for %s; string-path traversal is not a filesystem authority", pathFromRoot(root, path), selector.Sel.Name, reason)
+					}
+				}
+				return true
+			})
+		})
+	}
+}
+
+// assertRootLeaseDuplicateBoundary makes the one intentional raw descriptor
+// handoff explicit: linuxfs may duplicate a trusted root only to construct its
+// rooted traversal lease. Other production packages must use the safe API
+// rather than borrow a raw descriptor from mounts.RootLease.
+func assertRootLeaseDuplicateBoundary(t *testing.T, root, modulePath string) {
+	t.Helper()
+
+	mountsImportPath := modulePath + "/" + mountsPackagePath
+	for _, directory := range []string{"cmd", "internal"} {
+		forEachProductionGoFile(t, root, directory, func(path string, file *ast.File) {
+			if filepath.ToSlash(filepath.Dir(pathFromRoot(root, path))) == linuxfsPackagePath {
+				return
+			}
+
+			aliases := productionImportAliases(t, path, file)
+			globalRootLeases := mountsRootLeaseVariablesAtFileScope(file, aliases, mountsImportPath)
+			forEachFunctionScope(file, func(parameters []*ast.Field, body *ast.BlockStmt) {
+				rootLeases := mountsRootLeaseVariablesForScope(parameters, body, aliases, mountsImportPath)
+				addVariableObjects(rootLeases, globalRootLeases)
+				inspectFunctionScope(body, func(node ast.Node) bool {
+					selector, ok := node.(*ast.SelectorExpr)
+					if !ok || selector.Sel.Name != "Duplicate" || !isTrackedMountsRootLeaseReceiver(selector.X, rootLeases, aliases, mountsImportPath) {
+						return true
+					}
+					t.Errorf("%s calls mounts.RootLease.Duplicate; only %s may obtain the intentional raw root-descriptor handoff", pathFromRoot(root, path), linuxfsPackagePath)
+					return true
+				})
+			})
+		})
+	}
+}
+
+func mountsRootLeaseVariablesAtFileScope(file *ast.File, aliases map[string]string, mountsImportPath string) map[*ast.Object]struct{} {
+	variables := make(map[*ast.Object]struct{})
+	for _, declaration := range file.Decls {
+		general, ok := declaration.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, specification := range general.Specs {
+			value, ok := specification.(*ast.ValueSpec)
+			if ok && isMountsRootLeaseType(value.Type, aliases, mountsImportPath) {
+				addNamedIdentifiers(variables, value.Names)
+			}
+		}
+	}
+	return variables
+}
+
+func mountsRootLeaseVariablesForScope(parameters []*ast.Field, body *ast.BlockStmt, aliases map[string]string, mountsImportPath string) map[*ast.Object]struct{} {
+	variables := make(map[*ast.Object]struct{})
+	for _, parameter := range parameters {
+		if isMountsRootLeaseType(parameter.Type, aliases, mountsImportPath) {
+			addNamedIdentifiers(variables, parameter.Names)
+		}
+	}
+
+	inspectFunctionScope(body, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.ValueSpec:
+			if isMountsRootLeaseType(node.Type, aliases, mountsImportPath) {
+				addNamedIdentifiers(variables, node.Names)
+			}
+			for valueIndex, value := range node.Values {
+				if !isMountsRootLeaseFactoryCall(value, aliases, mountsImportPath) {
+					continue
+				}
+				addFactoryValueSpecTarget(variables, node.Names, len(node.Values), valueIndex)
+			}
+		case *ast.AssignStmt:
+			for valueIndex, value := range node.Rhs {
+				if !isMountsRootLeaseFactoryCall(value, aliases, mountsImportPath) {
+					continue
+				}
+				addFactoryAssignmentTarget(variables, node.Lhs, len(node.Rhs), valueIndex)
+			}
+		}
+		return true
+	})
+
+	return variables
+}
+
+func isTrackedMountsRootLeaseReceiver(expression ast.Expr, variables map[*ast.Object]struct{}, aliases map[string]string, mountsImportPath string) bool {
+	if identifier, ok := expression.(*ast.Ident); ok {
+		_, tracked := variables[identifier.Obj]
+		return tracked
+	}
+	return isMountsRootLeaseType(expression, aliases, mountsImportPath)
+}
+
+func isMountsRootLeaseFactoryCall(expression ast.Expr, aliases map[string]string, mountsImportPath string) bool {
+	call, ok := expression.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "OpenTrustedRoot" {
+		return false
+	}
+	packageName, ok := selector.X.(*ast.Ident)
+	return ok && aliases[packageName.Name] == mountsImportPath
+}
+
+func isMountsRootLeaseType(expression ast.Expr, aliases map[string]string, mountsImportPath string) bool {
+	for {
+		parenthesized, ok := expression.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		expression = parenthesized.X
+	}
+	if pointer, ok := expression.(*ast.StarExpr); ok {
+		expression = pointer.X
+	}
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "RootLease" {
+		return false
+	}
+	packageName, ok := selector.X.(*ast.Ident)
+	return ok && aliases[packageName.Name] == mountsImportPath
+}
+
+func productionImportAliases(t *testing.T, path string, file *ast.File) map[string]string {
+	t.Helper()
+
+	aliases := make(map[string]string, len(file.Imports))
+	for _, importSpec := range file.Imports {
+		importPath, ok := importPathOf(t, path, importSpec)
+		if !ok {
+			continue
+		}
+		name := filepath.Base(importPath)
+		if importSpec.Name != nil {
+			name = importSpec.Name.Name
+		}
+		if name != "_" && name != "." {
+			aliases[name] = importPath
+		}
+	}
+	return aliases
 }
 
 func forEachProductionGoFile(t *testing.T, root, relativeDirectory string, visit func(string, *ast.File)) {

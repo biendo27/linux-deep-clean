@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "Linux Filesystem Safety and Trash"
-status: pending
+status: in-progress
 priority: P1
 effort: "15-22 engineer-days"
 dependencies: [2]

@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/fxamacker/cbor/v2 v2.9.1
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/sys v0.47.0
 )
 
 require (

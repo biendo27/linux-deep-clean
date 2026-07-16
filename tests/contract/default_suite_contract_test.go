@@ -27,6 +27,29 @@ const (
 	vmGuardOpenAdapterName    = "openDisposableGuestSentinel"
 )
 
+var defaultLaneUnixSafetyDirectories = map[string]struct{}{
+	"internal/mounts":  {},
+	"internal/linuxfs": {},
+}
+
+var defaultLaneForbiddenUnixSelectors = map[string]string{
+	"Chroot":            "root-directory escape",
+	"Mount":             "mount mutation",
+	"MoveMount":         "mount mutation",
+	"PivotRoot":         "root-directory escape",
+	"RawSyscall":        "raw syscall escape",
+	"RawSyscall6":       "raw syscall escape",
+	"RawSyscallNoError": "raw syscall escape",
+	"Setns":             "mount-namespace mutation",
+	"Syscall":           "raw syscall escape",
+	"Syscall6":          "raw syscall escape",
+	"SyscallNoError":    "raw syscall escape",
+	"Unshare":           "mount-namespace mutation",
+	"Unmount":           "mount mutation",
+	"Unmount2":          "mount mutation",
+	"OpenByHandleAt":    "file-handle authority",
+}
+
 var vmExpectedBuildConstraints = map[string]string{
 	"guard.go":           "vmtest",
 	"guard_test.go":      "vmtest && !vmguardunit",
@@ -133,6 +156,8 @@ var defaultLaneForbiddenOSSelectors = map[string]string{
 	"Mkdir":        "host directory creation",
 	"MkdirAll":     "host directory creation",
 	"MkdirTemp":    "host directory creation",
+	"NewFile":      "raw descriptor authority",
+	"Open":         "raw descriptor authority",
 	"OpenFile":     "host file mutation",
 	"Process":      "host process control",
 	"Remove":       "host file removal",
@@ -165,10 +190,10 @@ var defaultLaneGoListPackages = map[string]struct{}{
 	"../../cmd/linux-deep-clean-helper": {},
 }
 
-// TestDefaultSuiteContract keeps the ordinary Go test lane a read-only,
-// unprivileged, offline contract. It intentionally inspects source files only:
-// it must not launch a process, contact a service, or alter the host to prove
-// that integration and VM qualifications remain opt-in.
+// TestDefaultSuiteContract keeps the ordinary Go test lane offline,
+// unprivileged, and host-safe. The two filesystem-safety packages may exercise
+// their rooted descriptor APIs only against test-owned temporary roots; mount,
+// namespace, and arbitrary-host authority remain opt-in integration or VM work.
 func TestDefaultSuiteContract(t *testing.T) {
 	root := repositoryRoot(t)
 
@@ -187,6 +212,19 @@ func TestDefaultSuiteContract(t *testing.T) {
 	}
 	for _, path := range defaultSources {
 		assertDefaultLaneSourceIsHostSafe(t, root, path)
+	}
+}
+
+func TestDefaultLaneDescriptorAndRawSyscallSelectorsAreForbidden(t *testing.T) {
+	for _, selector := range []string{"RawSyscall", "RawSyscall6", "RawSyscallNoError", "Syscall", "Syscall6", "SyscallNoError"} {
+		if _, forbidden := defaultLaneForbiddenUnixSelectors[selector]; !forbidden {
+			t.Errorf("unix.%s is not covered by the default-lane safety gate", selector)
+		}
+	}
+	for _, selector := range []string{"Open", "OpenFile", "Create", "NewFile"} {
+		if _, forbidden := defaultLaneForbiddenOSSelectors[selector]; !forbidden {
+			t.Errorf("os.%s is not covered by the default-lane descriptor-authority gate", selector)
+		}
 	}
 }
 
@@ -3004,8 +3042,11 @@ func assertDefaultLaneSourceIsHostSafe(t *testing.T, root, path string) {
 			t.Errorf("parse import path in %s: %v", relativePath(t, root, path), err)
 			continue
 		}
-		if reason, forbidden := defaultLaneForbiddenImports[importPath]; forbidden {
+		if reason, forbidden := defaultLaneForbiddenImports[importPath]; forbidden && !(importPath == "golang.org/x/sys/unix" && defaultLaneAllowsUnixSafetyAPI(root, path)) {
 			t.Errorf("%s imports %q for %s; default tests must use recorded inputs and remain offline, unprivileged, and host-safe", relativePath(t, root, path), importPath, reason)
+		}
+		if importPath == "golang.org/x/sys/unix" && defaultLaneAllowsUnixSafetyAPI(root, path) && spec.Name != nil {
+			t.Errorf("%s aliases golang.org/x/sys/unix; the narrow default-lane exception requires an explicit unix binding", relativePath(t, root, path))
 		}
 
 		name := filepath.Base(importPath)
@@ -3021,12 +3062,14 @@ func assertDefaultLaneSourceIsHostSafe(t *testing.T, root, path string) {
 		}
 	}
 	directExecConstructors := directExecConstructorSelectorPositions(file, aliases)
+	utsnameVariables := defaultLaneUnixUtsnameVariables(file, aliases)
 
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch node := node.(type) {
 		case *ast.SelectorExpr:
 			assertDefaultLaneOSSelectorIsSafe(t, root, path, aliases, node)
-			assertDefaultLaneProcessSelectorIsSafe(t, root, path, node)
+			assertDefaultLaneUnixSelectorIsSafe(t, root, path, aliases, node)
+			assertDefaultLaneProcessSelectorIsSafe(t, root, path, node, utsnameVariables)
 			assertNoDefaultLaneExecCmdType(t, root, path, aliases, node)
 			assertNoStoredExecConstructor(t, root, path, aliases, node, directExecConstructors)
 		case *ast.CompositeLit:
@@ -3045,6 +3088,20 @@ func assertDefaultLaneSourceIsHostSafe(t *testing.T, root, path string) {
 		}
 		return true
 	})
+}
+
+func defaultLaneAllowsUnixSafetyAPI(root, path string) bool {
+	directory := filepath.ToSlash(filepath.Dir(relativePathForRoot(root, path)))
+	_, allowed := defaultLaneUnixSafetyDirectories[directory]
+	return allowed
+}
+
+func relativePathForRoot(root, path string) string {
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return path
+	}
+	return relative
 }
 
 func directExecConstructorSelectorPositions(file *ast.File, aliases map[string]string) map[token.Pos]struct{} {
@@ -3092,6 +3149,18 @@ func assertDefaultLaneOSSelectorIsSafe(t *testing.T, root, path string, aliases 
 	}
 	if reason, forbidden := defaultLaneForbiddenOSSelectors[selector.Sel.Name]; forbidden {
 		t.Errorf("%s references os.%s for %s; default tests must remain offline, unprivileged, and host-safe", relativePath(t, root, path), selector.Sel.Name, reason)
+	}
+}
+
+func assertDefaultLaneUnixSelectorIsSafe(t *testing.T, root, path string, aliases map[string]string, selector *ast.SelectorExpr) {
+	t.Helper()
+
+	packageName, ok := selector.X.(*ast.Ident)
+	if !ok || aliases[packageName.Name] != "golang.org/x/sys/unix" {
+		return
+	}
+	if reason, forbidden := defaultLaneForbiddenUnixSelectors[selector.Sel.Name]; forbidden {
+		t.Errorf("%s references unix.%s for %s; default tests may not alter mounts, namespaces, or syscall authority", relativePath(t, root, path), selector.Sel.Name, reason)
 	}
 }
 
@@ -3143,12 +3212,47 @@ func assertDefaultLaneProcessCallIsSafe(t *testing.T, root, path string, file *a
 	}
 }
 
-func assertDefaultLaneProcessSelectorIsSafe(t *testing.T, root, path string, selector *ast.SelectorExpr) {
+func assertDefaultLaneProcessSelectorIsSafe(t *testing.T, root, path string, selector *ast.SelectorExpr, utsnameVariables map[string]struct{}) {
 	t.Helper()
 
-	if reason, forbidden := defaultLaneForbiddenProcessMethods[selector.Sel.Name]; forbidden {
+	if reason, forbidden := defaultLaneForbiddenProcessMethods[selector.Sel.Name]; forbidden && !defaultLaneUnixUtsnameReleaseField(selector, utsnameVariables) {
 		t.Errorf("%s references .%s for %s; default tests must remain offline, unprivileged, and host-safe", relativePath(t, root, path), selector.Sel.Name, reason)
 	}
+}
+
+func defaultLaneUnixUtsnameVariables(file *ast.File, aliases map[string]string) map[string]struct{} {
+	variables := make(map[string]struct{})
+	ast.Inspect(file, func(node ast.Node) bool {
+		value, ok := node.(*ast.ValueSpec)
+		if !ok || len(value.Names) == 0 {
+			return true
+		}
+		typeSelector, ok := value.Type.(*ast.SelectorExpr)
+		if !ok || typeSelector.Sel.Name != "Utsname" {
+			return true
+		}
+		packageName, ok := typeSelector.X.(*ast.Ident)
+		if !ok || aliases[packageName.Name] != "golang.org/x/sys/unix" {
+			return true
+		}
+		for _, name := range value.Names {
+			variables[name.Name] = struct{}{}
+		}
+		return true
+	})
+	return variables
+}
+
+func defaultLaneUnixUtsnameReleaseField(selector *ast.SelectorExpr, variables map[string]struct{}) bool {
+	if selector.Sel.Name != "Release" {
+		return false
+	}
+	identifier, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	_, known := variables[identifier.Name]
+	return known
 }
 
 func assertDefaultLaneGoCommandIsSafe(t *testing.T, root, path string, file *ast.File, aliases map[string]string, call *ast.CallExpr, method string) {
