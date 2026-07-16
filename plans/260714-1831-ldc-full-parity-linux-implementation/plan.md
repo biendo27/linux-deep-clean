@@ -76,7 +76,7 @@ Later implementation may parallelize read-only adapters behind stable Phase 4 in
 | # | Phase | Status | Exit gate |
 |---:|---|---|---|
 | 1 | [Repository, toolchain, and contract harness](./phase-01-start.md) | Completed | Permanent remote/module selected; hermetic harness and import gates pass |
-| 2 | [Canonical domain and plan protocol](./phase-02-canonical-domain-and-plan-protocol.md) | Pending | BytePath, schema, deterministic CBOR/digest, and result states frozen |
+| 2 | [Canonical domain and plan protocol](./phase-02-canonical-domain-and-plan-protocol.md) | Completed | BytePath, schema, deterministic CBOR/digest, and result states frozen |
 | 3 | [Linux filesystem safety and Trash](./phase-03-linux-filesystem-safety-and-trash.md) | Pending | Anchored staging, durability/reconciliation, and adversarial smoke gates pass |
 | 4 | [Policy engine, state, and recovery](./phase-04-policy-engine-state-and-recovery.md) | Pending | Deterministic planning, monotonic policy, private durable state, recovery pass |
 | 5 | [Provider discovery and read-only inventory](./phase-05-provider-discovery-and-read-only-inventory.md) | Pending | Supported provider parsers and inventory contracts pass without mutation |
@@ -88,6 +88,8 @@ Later implementation may parallelize read-only adapters behind stable Phase 4 in
 | 11 | [Packaging, release, and VM qualification](./phase-11-packaging-release-and-vm-qualification.md) | Pending | Native/rootless artifacts and all release gates pass on 15 guests |
 
 Phase 1 completion evidence: [bootstrap handoff report](./reports/pm-260715-2132-phase-1-bootstrap.md).
+
+Phase 2 completion evidence: [canonical protocol handoff report](./reports/pm-260716-1254-phase-2-canonical-protocol.md).
 
 ## Decision and Entry Gates
 

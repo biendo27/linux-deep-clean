@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - main
+  schedule:
+    - cron: "17 3 * * *"
 
 permissions:
   contents: read
@@ -64,7 +66,21 @@ jobs:
           GOROOT= GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOFLAGS= go vet -mod=readonly ./...
           GOROOT= GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOFLAGS= go test -mod=readonly ./internal/architecture -run TestArchitectureImportAllowlists -count=1
 
-      - name: Enforce focused bootstrap coverage in a network namespace
+      - name: Repeat strict protocol corpus and golden compatibility offline
+        run: |
+          runner_user="$(id -un)"
+          runner_home="$HOME"
+          runner_path="$PATH"
+          sudo env RUNNER_USER="$runner_user" RUNNER_HOME="$runner_home" RUNNER_PATH="$runner_path" \
+            unshare --net --fork --mount-proc /bin/bash -ceu '
+              test "$(id -u)" = 0
+              exec sudo -u "$RUNNER_USER" env \
+                HOME="$RUNNER_HOME" PATH="$RUNNER_PATH" \
+                GOROOT= GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOFLAGS= \
+                go test -mod=readonly ./internal/planproto -run "TestStrictDecoderRejectsNonCanonicalCorpus|TestPlanV1GoldenCompatibility" -count=100
+            '
+
+      - name: Enforce bootstrap and Phase 2 coverage in a network namespace
         run: |
           runner_user="$(id -un)"
           runner_home="$HOME"
@@ -104,3 +120,56 @@ jobs:
           make build
           go version -m bin/ldclean
           go version -m bin/linux-deep-clean-helper
+
+  protocol-fuzz:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .go-version
+          check-latest: false
+
+      - name: Verify pinned local toolchain
+        run: |
+          test "$(GOROOT= go env GOVERSION)" = "go$(tr -d '[:space:]' < .go-version)"
+          GOROOT= GOTOOLCHAIN=local go version
+
+      - name: Populate and verify the module cache
+        run: |
+          GOROOT= GOTOOLCHAIN=local GOWORK=off GOFLAGS= go mod download
+          GOROOT= GOTOOLCHAIN=local GOWORK=off GOFLAGS= go mod verify
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Fuzz Phase 2 codecs offline in a network namespace
+        run: |
+          runner_user="$(id -un)"
+          runner_home="$HOME"
+          runner_path="$PATH"
+          sudo env RUNNER_USER="$runner_user" RUNNER_HOME="$runner_home" RUNNER_PATH="$runner_path" \
+            unshare --net --fork --mount-proc /bin/bash -ceu '
+              test "$(id -u)" = 0
+              exec sudo -u "$RUNNER_USER" env \
+                HOME="$RUNNER_HOME" PATH="$RUNNER_PATH" \
+                GOROOT= GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOFLAGS= \
+                go test -mod=readonly ./internal/pathbytes -run="^\$" -parallel=1 -fuzz=FuzzBytePathCodecs -fuzztime=10m
+            '
+          sudo env RUNNER_USER="$runner_user" RUNNER_HOME="$runner_home" RUNNER_PATH="$runner_path" \
+            unshare --net --fork --mount-proc /bin/bash -ceu '
+              test "$(id -u)" = 0
+              exec sudo -u "$RUNNER_USER" env \
+                HOME="$RUNNER_HOME" PATH="$RUNNER_PATH" \
+                GOROOT= GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOFLAGS= \
+                go test -mod=readonly ./internal/planproto -run="^\$" -parallel=1 -fuzz=FuzzCanonicalCBOR -fuzztime=10m
+            '
+          sudo env RUNNER_USER="$runner_user" RUNNER_HOME="$runner_home" RUNNER_PATH="$runner_path" \
+            unshare --net --fork --mount-proc /bin/bash -ceu '
+              test "$(id -u)" = 0
+              exec sudo -u "$RUNNER_USER" env \
+                HOME="$RUNNER_HOME" PATH="$RUNNER_PATH" \
+                GOROOT= GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOFLAGS= \
+                go test -mod=readonly ./internal/planproto -run="^\$" -parallel=1 -fuzz=FuzzPlanDigest -fuzztime=10m
+            '

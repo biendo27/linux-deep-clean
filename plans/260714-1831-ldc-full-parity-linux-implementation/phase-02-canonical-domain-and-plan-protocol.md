@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "Canonical Domain and Plan Protocol"
-status: pending
+status: completed
 priority: P1
 effort: "8-12 engineer-days"
 dependencies: [1]
@@ -51,17 +51,17 @@ domain.Plan/Result -> explicit JSON DTOs for contracts (not presenter styling)
 
 ### Planned interface/function/type checklist
 
-- [ ] `pathbytes.BytePath`, `New(components [][]byte)`, `Components() [][]byte`, `Equal`, `Display`, `EncodeJSONExact`, `DecodeJSONExact`, `PercentEncodeTrashPath`, `PercentDecodeTrashPath`.
-- [ ] `domain.ProviderID`, `TrustedRootID`, `CandidateID`, `ActionID`, `RunID`, `PlanDigest`, and manager object IDs use validated constructors and stable encoded forms.
-- [ ] `domain.Candidate` owns provider, typed target, evidence, size facts, confidence, and discovery precondition; it grants no authority.
-- [ ] `domain.TransactionGraph`, `TransactionNode`, `TransactionEdge`, and `ProviderGuarantee` use closed variants and stable identifiers; `Validate` rejects unknown fields/kinds, duplicate identities/edges, dangling references, or a guarantee broader than the evidence.
-- [ ] `domain.Evidence` and `domain.Precondition` are discriminated unions with a closed `Kind`; filesystem preconditions carry required-field mask plus device/inode/type/UID/GID/mode/link/size/time/mount evidence as applicable.
-- [ ] `domain.ActionKind` initially names `trash_path`, `delete_recreatable_path`, `quarantine_path`, `restore_trash_path`, `restore_quarantine_path`, `repair_state`, `remove_native_package`, `remove_flatpak_ref`, `remove_snap`, `clean_package_cache`, `vacuum_journal`, `run_owned_cache_rebuild`, `install_completion`, `configure_fingerprint_auth`, `update_ldclean_package`, and `remove_ldclean_package`; definition does not enable execution.
-- [ ] `domain.Action` includes typed target, evidence, precondition, dependency IDs, risk/reversibility classes, estimated effect, required capability, provider guarantee, and expected postcondition.
-- [ ] `domain.PlanBody`, `NewPlan`, `Plan.Validate`, `Plan.CanonicalBody`, `PlanDigest.Verify`; constructor sorts only fields declared order-insensitive and rejects duplicate/unknown dependency references.
-- [ ] `domain.Result`, `ActionResult`, `RecoveryHandle`, `Outcome`, `ReconciliationState`, `ReconciliationProbe`, `ExitSummary`; recovery handles bind root/token/original `BytePath`/date without absolute-path authority, and validation rejects `indeterminate` without reconciliation or false rollback/freed-space claims.
-- [ ] `domain.SizeFacts` separates apparent, allocated, estimated, verified, and unavailable values; hard-link semantics cannot claim allocated bytes freed from one removed link.
-- [ ] `planproto.EncodePlan`, `DecodePlan`, `EncodeResult`, `DecodeResult`, `ComputeDigest`, `VerifyDigest`, and `DecodeLimits` use strict canonical re-encode-and-byte-compare.
+- [x] `pathbytes.BytePath`, `New(components [][]byte)`, `Components() [][]byte`, `Equal`, `Display`, `EncodeJSONExact`, `DecodeJSONExact`, `PercentEncodeTrashPath`, `PercentDecodeTrashPath`.
+- [x] `domain.ProviderID`, `TrustedRootID`, `CandidateID`, `ActionID`, `RunID`, `PlanDigest`, and manager object IDs use validated constructors and stable encoded forms.
+- [x] `domain.Candidate` owns provider, typed target, evidence, size facts, confidence, and discovery precondition; it grants no authority.
+- [x] `domain.TransactionGraph`, `TransactionNode`, `TransactionEdge`, and `ProviderGuarantee` use closed variants and stable identifiers; `Validate` rejects unknown fields/kinds, duplicate identities/edges, dangling references, or a guarantee broader than the evidence.
+- [x] `domain.Evidence` and `domain.Precondition` are discriminated unions with a closed `Kind`; filesystem preconditions carry required-field mask plus device/inode/type/UID/GID/mode/link/size/time/mount evidence as applicable.
+- [x] `domain.ActionKind` initially names `trash_path`, `delete_recreatable_path`, `quarantine_path`, `restore_trash_path`, `restore_quarantine_path`, `repair_state`, `remove_native_package`, `remove_flatpak_ref`, `remove_snap`, `clean_package_cache`, `vacuum_journal`, `run_owned_cache_rebuild`, `install_completion`, `configure_fingerprint_auth`, `update_ldclean_package`, and `remove_ldclean_package`; definition does not enable execution.
+- [x] `domain.Action` includes typed target, evidence, precondition, dependency IDs, risk/reversibility classes, estimated effect, required capability, provider guarantee, and expected postcondition.
+- [x] `domain.PlanBody`, `NewPlan`, `Plan.Validate`, `Plan.CanonicalBody`, `PlanDigest.Verify`; constructor sorts only fields declared order-insensitive and rejects duplicate/unknown dependency references.
+- [x] `domain.Result`, `ActionResult`, `RecoveryHandle`, `Outcome`, `ReconciliationState`, `ReconciliationProbe`, `ExitSummary`; recovery handles bind root/token/original `BytePath`/date without absolute-path authority, and validation rejects `indeterminate` without reconciliation or false rollback/freed-space claims.
+- [x] `domain.SizeFacts` separates apparent, allocated, estimated, verified, and unavailable values; hard-link semantics cannot claim allocated bytes freed from one removed link.
+- [x] `planproto.EncodePlan`, `DecodePlan`, `EncodeResult`, `DecodeResult`, `ComputeDigest`, `VerifyDigest`, and `DecodeLimits` use strict canonical re-encode-and-byte-compare.
 
 ### Dependency/import constraints
 
@@ -174,14 +174,14 @@ Coverage gate: each of `pathbytes`, `domain`, and `planproto` >=90% statement co
 
 ## Success Criteria
 
-- [ ] Every filesystem target is a validated `TrustedRootID + BytePath`; no display/absolute path is authority.
-- [ ] Raw-byte CBOR and exact JSON/Trash codecs round-trip invalid UTF-8 without normalization or ambiguity.
-- [ ] Domain variants and action enums are closed, typed, versioned, and grant no execution capability.
-- [ ] Provider preview and helper re-simulation use the same dependency-free `domain.TransactionGraph`; executor packages cannot redefine or broaden it.
-- [ ] Canonical plan/result bytes are deterministic; one semantic change changes the digest; digest is documented/tested as non-authorizing.
-- [ ] Strict decoder rejects every forbidden form, over-budget structure, unknown field/version, and trailing byte before authority use.
-- [ ] Interrupted/lost-response results become `indeterminate` with `reconciliation_required`; exit summaries preserve partial/unknown state.
-- [ ] Golden compatibility, architecture, race, >=90% coverage, property, and fuzz gates pass.
+- [x] Every filesystem target is a validated `TrustedRootID + BytePath`; no display/absolute path is authority.
+- [x] Raw-byte CBOR and exact JSON/Trash codecs round-trip invalid UTF-8 without normalization or ambiguity.
+- [x] Domain variants and action enums are closed, typed, versioned, and grant no execution capability.
+- [x] Provider preview and helper re-simulation use the same dependency-free `domain.TransactionGraph`; executor packages cannot redefine or broaden it.
+- [x] Canonical plan/result bytes are deterministic; one semantic change changes the digest; digest is documented/tested as non-authorizing.
+- [x] Strict decoder rejects every forbidden form, over-budget structure, unknown field/version, and trailing byte before authority use.
+- [x] Interrupted/lost-response results become `indeterminate` with `reconciliation_required`; exit summaries preserve partial/unknown state.
+- [x] Golden compatibility, architecture, race, >=90% coverage, property, and fuzz gates pass.
 
 ## Risk Assessment and Rollback
 

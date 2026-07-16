@@ -29,15 +29,23 @@ not by the default-lane source checks.
 
 ## Direct dependency
 
-Phase 1 has one direct runtime dependency:
+Phase 2 has two direct runtime dependencies:
 
 | Module | Pin | Purpose | License / review |
 | --- | --- | --- | --- |
+| `github.com/fxamacker/cbor/v2` | [`v2.9.1`](https://github.com/fxamacker/cbor/releases/tag/v2.9.1) | RFC 8949 deterministic plan/result codec | MIT; release tag commit `63d1c6649d4235ae97b78c40888d9b2a0b426878`; confined by architecture tests to `internal/planproto` |
 | `github.com/spf13/cobra` | [`v1.10.2`](https://github.com/spf13/cobra/releases/tag/v1.10.2) | Bootstrap CLI parsing and help rendering | Apache-2.0; release tag commit `88b30ab89da2d0d0abb153818746c5a2d30eccec` |
 
 Its Go module declares `go 1.15` and the audited transitive graph is pinned in
 `go.sum`. Cobra remains presenter-only; architecture tests reject it anywhere
 outside the CLI path and reject all non-standard-library helper dependencies.
+
+CBOR is confined to the protocol boundary. `internal/pathbytes` and
+`internal/domain` remain standard-library-only (apart from domain's local
+raw-path import), while `internal/planproto` is the sole project package
+allowed to import `fxamacker/cbor/v2`. The codec uses an explicit deterministic
+encode profile and a bounded reject-first decode profile; a plan digest binds
+canonical bytes for audit and drift detection, never for authorization.
 
 ## Vulnerability check
 
@@ -53,4 +61,4 @@ networked review operation; it is not part of the hermetic default test lane.
 ## Re-audit triggers
 
 Repeat this review before changing the pinned Go patch, adding a direct
-dependency, changing Cobra's use boundary, or cutting a release.
+dependency, changing Cobra's or CBOR's use boundary, or cutting a release.

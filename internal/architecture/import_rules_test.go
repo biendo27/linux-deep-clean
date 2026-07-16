@@ -46,7 +46,9 @@ func TestArchitectureImportAllowlists(t *testing.T) {
 	assertBootstrapRuntimeSafety(t, root)
 	assertApplicationImports(t, root, modulePath, standardImports)
 	assertPresenterImports(t, root, modulePath, standardImports)
-	assertDomainImports(t, root, standardImports)
+	assertPathbytesImports(t, root, standardImports)
+	assertDomainImports(t, root, modulePath, standardImports)
+	assertPlanprotoImports(t, root, modulePath, standardImports)
 	assertCobraPresenterOnly(t, root)
 
 	mainPackages, mainListed := listMainCommandDependencies(t, root)
@@ -396,17 +398,63 @@ func assertCobraPresenterOnly(t *testing.T, root string) {
 	}
 }
 
-func assertDomainImports(t *testing.T, root string, standardImports map[string]struct{}) {
+func assertPathbytesImports(t *testing.T, root string, standardImports map[string]struct{}) {
 	t.Helper()
 
-	forEachProductionGoFile(t, root, "internal/domain", func(path string, file *ast.File) {
+	forEachProductionGoFile(t, root, "internal/pathbytes", func(path string, file *ast.File) {
 		for _, importSpec := range file.Imports {
 			importPath, ok := importPathOf(t, path, importSpec)
 			if !ok {
 				continue
 			}
 			if _, standard := standardImports[importPath]; !standard {
-				t.Errorf("%s: domain packages may import only the standard library; found %q", pathFromRoot(root, path), importPath)
+				t.Errorf("%s: pathbytes packages may import only the standard library; found %q", pathFromRoot(root, path), importPath)
+			}
+		}
+	})
+}
+
+func assertDomainImports(t *testing.T, root, modulePath string, standardImports map[string]struct{}) {
+	t.Helper()
+
+	allowedProjectImports := map[string]struct{}{
+		modulePath + "/internal/pathbytes": {},
+	}
+	forEachProductionGoFile(t, root, "internal/domain", func(path string, file *ast.File) {
+		for _, importSpec := range file.Imports {
+			importPath, ok := importPathOf(t, path, importSpec)
+			if !ok {
+				continue
+			}
+			if _, standard := standardImports[importPath]; standard {
+				continue
+			}
+			if _, allowed := allowedProjectImports[importPath]; !allowed {
+				t.Errorf("%s: domain packages may import only the standard library or internal/pathbytes; found %q", pathFromRoot(root, path), importPath)
+			}
+		}
+	})
+}
+
+func assertPlanprotoImports(t *testing.T, root, modulePath string, standardImports map[string]struct{}) {
+	t.Helper()
+
+	allowedImports := map[string]struct{}{
+		modulePath + "/internal/domain":    {},
+		modulePath + "/internal/pathbytes": {},
+		"github.com/fxamacker/cbor/v2":     {},
+	}
+	forEachProductionGoFile(t, root, "internal/planproto", func(path string, file *ast.File) {
+		for _, importSpec := range file.Imports {
+			importPath, ok := importPathOf(t, path, importSpec)
+			if !ok {
+				continue
+			}
+			if _, standard := standardImports[importPath]; standard {
+				continue
+			}
+			if _, allowed := allowedImports[importPath]; !allowed {
+				t.Errorf("%s: planproto packages may import only the standard library, internal/domain, internal/pathbytes, or fxamacker/cbor/v2; found %q", pathFromRoot(root, path), importPath)
 			}
 		}
 	})
