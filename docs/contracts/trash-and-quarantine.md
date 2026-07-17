@@ -79,11 +79,26 @@ name at this boundary; it is not token generation, reservation, pair ownership,
 or a durable intent record. Once creation may have succeeded, an error retains
 the record for later reconciliation rather than attempting unsafe cleanup.
 
+`trash.WriteTrashInfoDurable` is the metadata-only composition boundary. It
+accepts a topology-qualified `mounts.TrashLease`, asks that lease to map a
+source-relative byte path to its fixed metadata basis, reselects the literal
+Trash topology, serializes the record, and delegates durable publication to
+`linuxfs`. The mapped path is lexical metadata only: this operation does not
+resolve, open, or prove a source exists. It must therefore be preceded by a
+future source-bound durable intent and token reservation before any content
+move can use it.
+
+`quarantine.OpenPerMountQuarantine` is similarly an open-only boundary. It
+accepts only a `LayoutPrivateQuarantine` lease and returns an opaque store with
+the trusted root identity and idempotent close. It exposes neither a pathname
+nor a descriptor and cannot retain, restore, scan, remove, or otherwise mutate
+content.
+
 No current API moves source content into `files`, restores content, removes
 metadata, reconciles an orphan, or proves a metadata/content pair. Those
 operations remain blocked on one-shot source-bound token reservation, durable
-intent/reconciliation records, and descriptor-rooted no-replace move and
-restore primitives.
+intent/reconciliation records, and descriptor-rooted no-replace move, retain,
+and restore primitives.
 
 ## Intended Trash ordering
 

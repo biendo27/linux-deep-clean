@@ -60,8 +60,10 @@ match: FD-walk removal OR finalize Trash/quarantine durability
 - [x] `linuxfs.PublishFileDurable` accepts only a held private-directory lease plus one basename, uses no-follow/no-replace semantics, verifies the final entry identity and bytes, and syncs file and directory. `ReplaceFileDurable` remains blocked on a durable intent/reconciliation design.
 - [x] `mounts.TrashAuthority`, `TrashRegistry`, `OpenTrustedTrash`, and `linuxfs.OpenTrashDirectories` bind an engine/helper-selected descriptor bundle and lend only requalified `files`/`info` duplicates to `linuxfs`; `PublishTrashInfoDurable` durably publishes one bounded LDC metadata record. The legacy API remains a metadata-only pre-selector.
 - [x] `trash.SelectTrashRoot`, `ValidateTrashLayout`, and `linuxfs.OpenTopologyQualifiedTrashDirectories` require engine/helper-attested anchor evidence, prove literal Home/`.Trash-$uid`/`.Trash/$uid` plus `files`/`info` relationships with descriptor-rooted `openat2`, and requalify the proof at point of use. They do not discover a Trash location.
-- [ ] `ReserveTrashToken`, `WriteTrashInfoDurable`, `MoveToTrash`, `RestoreFromTrash`, `ReconcileTrashOrphans`.
-- [ ] `quarantine.OpenPerMountQuarantine`, `Retain`, `RestoreNoReplace`, `ApplyRetention`, `ReconcileRetained`; retention removal still uses verified staged-tree primitives.
+- [x] `WriteTrashInfoDurable` maps a lease-attested lexical metadata path, reselects topology, serializes bounded metadata, and durably publishes it. It does not resolve the source, reserve a token, move content, or issue a recovery handle.
+- [ ] `ReserveTrashToken`, `MoveToTrash`, `RestoreFromTrash`, `ReconcileTrashOrphans`.
+- [x] `quarantine.OpenPerMountQuarantine` accepts only a requalified `LayoutPrivateQuarantine` lease and exposes root metadata plus idempotent close; it exposes no path, descriptor, or content mutation.
+- [ ] `Retain`, `RestoreNoReplace`, `ApplyRetention`, `ReconcileRetained`; retention removal still uses verified staged-tree primitives.
 - [x] `domain.RecoveryHandle` identifies root/token/original `BytePath`/date without absolute-path authority; `domain.ActionResult` distinguishes restored, retained, drifted, interrupted, and indeterminate outcomes.
 - [ ] Wire those result types into actual Trash/quarantine retain, restore, and reconciliation operations after their trusted layout authorities and durable intent records exist.
 
@@ -89,11 +91,11 @@ match: FD-walk removal OR finalize Trash/quarantine durability
 | Create | `internal/linuxfs/resolve_test.go`, `internal/linuxfs/snapshot_test.go` | Traversal and action-mask tests |
 | Create | `internal/linuxfs/stage_test.go`, `internal/linuxfs/remove_test.go`, `internal/linuxfs/durable_file_test.go` | Mismatch, special-type, hard-link, durable publication tests |
 | Create | `internal/trash/select.go`, `internal/trash/layout.go` | Home/top-directory selection and layout validation |
-| Create | `internal/trash/metadata.go`, `internal/trash/move.go` | Token pair, durable `.trashinfo`, move |
+| Create | `internal/trash/metadata.go`, `internal/trash/write.go`, `internal/trash/move.go` | Token validation, metadata serialization/publication, move |
 | Create | `internal/trash/restore.go`, `internal/trash/reconcile.go` | No-replace restoration and crash orphan repair |
 | Create | `internal/trash/select_test.go`, `internal/trash/metadata_test.go` | Mount/layout/raw-byte contract tests |
 | Create | `internal/trash/move_test.go`, `internal/trash/reconcile_test.go` | Collision/durability/crash-state tests |
-| Create | `internal/quarantine/quarantine.go`, `internal/quarantine/retention.go` | Private same-mount staging/retention |
+| Create | `internal/quarantine/quarantine.go`, `internal/quarantine/retention.go` | Private same-mount store authority/retention |
 | Create | `internal/quarantine/reconcile.go`, `internal/quarantine/quarantine_test.go` | Retained-object recovery tests |
 | Create | `tests/integration/linuxfs_integration_test.go` | Unprivileged real-syscall integration lane |
 | Create | `tests/integration/trash_crash_integration_test.go` | Process-kill durability/reconciliation lane |

@@ -59,6 +59,9 @@ coverage:
 	$(GO_ENV) $(GO) test -mod=readonly -count=1 -covermode=atomic -coverprofile=coverage/trash.out ./internal/trash
 	$(GO_ENV) $(GO) tool cover -func=coverage/trash.out | tee coverage/trash.func
 	awk '/^total:/ { found = 1; percent = $$3; sub(/%$$/, "", percent); if (percent + 0 < 90) { printf "internal/trash coverage %s is below 90%%\n", $$3; exit 1 } } END { if (!found) { print "internal/trash coverage total is missing"; exit 1 } }' coverage/trash.func
+	$(GO_ENV) $(GO) test -mod=readonly -count=1 -covermode=atomic -coverprofile=coverage/quarantine.out ./internal/quarantine
+	$(GO_ENV) $(GO) tool cover -func=coverage/quarantine.out | tee coverage/quarantine.func
+	awk '/^total:/ { found = 1; percent = $$3; sub(/%$$/, "", percent); if (percent + 0 < 90) { printf "internal/quarantine coverage %s is below 90%%\n", $$3; exit 1 } } END { if (!found) { print "internal/quarantine coverage total is missing"; exit 1 } }' coverage/quarantine.func
 
 integration:
 	$(GO_ENV) $(GO) test -mod=readonly -tags=integration ./tests/integration -count=1

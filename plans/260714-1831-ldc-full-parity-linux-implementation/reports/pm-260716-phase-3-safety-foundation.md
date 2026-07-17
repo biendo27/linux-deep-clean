@@ -1,6 +1,6 @@
 # Phase 3 Filesystem Safety Foundation Report
 
-Date: 2026-07-16
+Date: 2026-07-17
 
 ## Outcome
 
@@ -67,6 +67,16 @@ weaker fallback.
   profile is rejection defense only; generation, reservation, durable intent,
   content move, restore, metadata removal, and orphan reconciliation remain
   unimplemented.
+- Added `trash.WriteTrashInfoDurable`, which maps a lease-attested lexical
+  source-relative metadata path, reselects the topology-qualified Trash
+  layout, serializes bounded `.trashinfo` bytes, and invokes the durable
+  publication primitive. It deliberately does not resolve or validate the
+  source, reserve a token, move content, issue a recovery handle, or clean up
+  a possibly published record.
+- Added `quarantine.OpenPerMountQuarantine`, an open-only facade over a
+  requalified `LayoutPrivateQuarantine` lease. The returned store exposes only
+  the trusted root identity and idempotent close; it cannot disclose a path or
+  descriptor or retain, restore, scan, delete, or reconcile content.
 
 ## Validation evidence
 
@@ -79,9 +89,9 @@ following local checks passed:
 - `GOTOOLCHAIN=local go mod verify` and `make build`
 - `GOCACHE=/tmp/ldc-go-build make coverage` passed and enforces >=90%
   statement coverage for the Phase 3 validation/state-machine packages:
-  `internal/linuxfs` 90.1%, `internal/mounts` 90.0%, and `internal/trash`
-  97.1%. The explicit cache location is required by this sandbox; the Makefile
-  itself remains hermetic/offline.
+  `internal/linuxfs` 90.1%, `internal/mounts` 90.0%, `internal/trash` 94.7%,
+  and `internal/quarantine` 94.3%. The explicit cache location is required by
+  this sandbox; the Makefile itself remains hermetic/offline.
 
 The targeted integration command
 `GOTOOLCHAIN=local go test -tags=integration ./tests/integration -run 'LinuxFS|TrashCrash' -count=1`
@@ -103,7 +113,8 @@ ordinary staged object remains retained and reports `unsupported`.
   exist, but no engine/helper composition has registered a real source-root
   mapping for a private same-mount quarantine directory or a usable Trash
   topology with the required metadata basis for a source root that may be a
-  subdirectory. Staging, content Trash moves, and quarantine operations remain
+  subdirectory. The metadata and open-only facades do not alter that fact:
+  content Trash moves, quarantine retention, restore, and reconciliation remain
   unsupported rather than accepting an arbitrary path or falling back to
   permanent deletion. That authority must also prove an exclusive staged
   namespace before irreversible recursive removal can be enabled.
