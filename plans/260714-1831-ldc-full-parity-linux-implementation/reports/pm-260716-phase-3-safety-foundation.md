@@ -5,9 +5,10 @@ Date: 2026-07-17
 ## Outcome
 
 Phase 3 is in progress. Its descriptor-rooted safety foundation is implemented
-and intentionally does not enable any user filesystem mutation. The remaining
-Trash, quarantine, and VM gates are hard stops, not behavior deferred behind a
-weaker fallback.
+and intentionally does not enable any production user-content mutation. The
+metadata-only publication primitive requires a qualified lease, and no current
+command or composition can supply one. The remaining Trash, quarantine, and VM
+gates are hard stops, not behavior deferred behind a weaker fallback.
 
 ## Delivered foundation
 
@@ -121,9 +122,19 @@ ordinary staged object remains retained and reports `unsupported`.
 - No disposable supported VM has run the ext4/XFS/Btrfs mount and adversarial
   race campaigns. Default-lane tests cannot certify a production root or
   satisfy the required 1,000-attempt PR smoke gate.
-- Durable Trash metadata pairing, recovery reconciliation, replacement state
-  publication, and quarantine retention require the missing registered layout
-  authority plus durable intent records and remain unimplemented.
+- No production state authority stores a durable, source-bound intent.
+  `trash.MetadataPublication` and LinuxFS staging receipts are process-bound
+  results, not crash-recoverable ownership proof. A future private, versioned
+  intent-event ledger must be configuration-owned and bind the root ID, exact
+  source `BytePath`, action-specific precondition, action/plan digest, reserved
+  LDC token and destination semantics, and pre-/post-effect transitions. It
+  must provide bounded recovery lookup and resolve its own storage and
+  cross-mount failure semantics. That is the earliest safe Phase 4 state
+  work; an in-memory Phase 3 substitute would not make a move or cleanup safe.
+  Durable Trash metadata pairing, recovery reconciliation, replacement-state
+  publication, and quarantine retention therefore require both this future
+  ledger and the missing registered layout authority, and remain
+  unimplemented.
 
 ## Handoff
 
@@ -131,4 +142,6 @@ Do not start Phase 4 while this phase remains gated. The next Phase 3 work
 must register and prove engine/helper-owned layouts for the supported root
 classes, then implement and qualify the documented Trash and quarantine
 ordering without giving providers, presenters, plans, or callers absolute-path
-authority.
+authority. Once the Phase 3 exit gates are met, Phase 4 must establish the
+configuration-owned durable-intent ledger before it enables any of the pending
+Trash or quarantine content mutations.
