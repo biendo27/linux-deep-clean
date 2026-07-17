@@ -91,7 +91,7 @@ Phase 1 completion evidence: [bootstrap handoff report](./reports/pm-260715-2132
 
 Phase 2 completion evidence: [canonical protocol handoff report](./reports/pm-260716-1254-phase-2-canonical-protocol.md).
 
-Phase 3 safety-foundation evidence: [in-progress handoff report](./reports/pm-260716-phase-3-safety-foundation.md). The phase remains gated on an engine/helper-owned per-mount layout authority and disposable-VM qualification; no user filesystem mutation is enabled.
+Phase 3 safety-foundation evidence: [in-progress handoff report](./reports/pm-260716-phase-3-safety-foundation.md). The phase remains gated on an engine/helper-owned per-mount layout authority and disposable-VM qualification; no production command or composition enables user-content mutation.
 
 ## Decision and Entry Gates
 

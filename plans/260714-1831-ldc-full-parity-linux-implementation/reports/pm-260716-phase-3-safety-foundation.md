@@ -78,6 +78,13 @@ gates are hard stops, not behavior deferred behind a weaker fallback.
   requalified `LayoutPrivateQuarantine` lease. The returned store exposes only
   the trusted root identity and idempotent close; it cannot disclose a path or
   descriptor or retain, restore, scan, delete, or reconcile content.
+- Added an opt-in Linux integration-harness self-check with two dynamically
+  test-owned temporary roots. It records a deterministic seed and no-op
+  schedule, then verifies that a real outside sentinel keeps its device,
+  inode, full mode, size, and bytes; poisoned snapshots prove every comparison
+  branch rejects a change. The CI lane executes only this offline,
+  non-mutating self-check. It calls no production filesystem API and is not
+  evidence for the pending Trash, quarantine, mount, race, or crash behavior.
 
 ## Validation evidence
 
@@ -88,6 +95,12 @@ following local checks passed:
 - `GOTOOLCHAIN=local go test -race ./... -count=1`
 - `GOTOOLCHAIN=local go vet ./...`
 - `GOTOOLCHAIN=local go mod verify` and `make build`
+- `GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOFLAGS= go test -mod=readonly
+  -tags=integration ./tests/integration -count=1`
+- `GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOFLAGS= go test -mod=readonly
+  ./tests/contract -run TestDefaultSuiteContract -count=1`
+- `GOTOOLCHAIN=local GOPROXY=off GOWORK=off GOFLAGS= go test -mod=readonly
+  ./internal/architecture -run TestArchitectureImportAllowlists -count=1`
 - `GOCACHE=/tmp/ldc-go-build make coverage` passed and enforces >=90%
   statement coverage for the Phase 3 validation/state-machine packages:
   `internal/linuxfs` 90.1%, `internal/mounts` 90.0%, `internal/trash` 94.7%,
@@ -135,6 +148,12 @@ ordinary staged object remains retained and reports `unsupported`.
   publication, and quarantine retention therefore require both this future
   ledger and the missing registered layout authority, and remain
   unimplemented.
+- The plan needs an explicit sequencing decision before content mutation can
+  continue: Phase 3 requires the durable intent ledger for safe moves, while
+  Phase 4 is declared dependent on Phase 3 and the Phase 3 handoff says not to
+  start Phase 4 while this phase is gated. Do not bridge that loop with an
+  in-memory substitute or a weaker mutation path; revise the phase boundary or
+  authorize a dedicated earlier durable-ledger slice first.
 
 ## Handoff
 
