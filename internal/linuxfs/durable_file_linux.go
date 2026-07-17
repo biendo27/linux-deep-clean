@@ -7,8 +7,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/biendo27/linux-deep-clean/internal/domain"
+	"github.com/biendo27/linux-deep-clean/internal/mounts"
 	"golang.org/x/sys/unix"
 )
 
@@ -54,11 +56,31 @@ func PublishFileDurable(ctx context.Context, directory *PrivateDirectoryLease, b
 }
 
 func publishFileDurableWith(ctx context.Context, directory *PrivateDirectoryLease, basename string, contents []byte, hooks durableFileHooks) error {
+	if directory == nil {
+		return fmt.Errorf("%w: qualified private directory lease is required", ErrUnsupported)
+	}
+	if directory.Kind() == mounts.LayoutPrivateState && isReservedPrivateLedgerBasename(basename) {
+		return fmt.Errorf("%w: private ledger records require an opaque locked ledger session", ErrUnsupported)
+	}
+	return directory.withFD(func(directoryFD int) error {
+		return publishFileDurableAtWith(ctx, directoryFD, basename, contents, hooks)
+	})
+}
+
+func isReservedPrivateLedgerBasename(basename string) bool {
+	return strings.HasPrefix(basename, privateLedgerNamespacePrefix)
+}
+
+// publishFileDurableAtWith is the descriptor-scoped half of durable private
+// publication. It remains package-private so only LinuxFS operations holding a
+// requalified private directory descriptor can reuse the exact no-replace,
+// fsync, and final-identity protocol.
+func publishFileDurableAtWith(ctx context.Context, directoryFD int, basename string, contents []byte, hooks durableFileHooks) error {
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	if directory == nil {
-		return fmt.Errorf("%w: qualified private directory lease is required", ErrUnsupported)
+	if directoryFD < 0 {
+		return fmt.Errorf("%w: private directory descriptor is required", ErrUnsupported)
 	}
 	if err := validateBasename(basename); err != nil {
 		return err
@@ -70,60 +92,58 @@ func publishFileDurableWith(ctx context.Context, directory *PrivateDirectoryLeas
 		return err
 	}
 
-	return directory.withFD(func(directoryFD int) error {
-		// A directory-sync capability check happens before openat creates an
-		// entry. If it cannot promise durability, no state record is emitted.
-		if err := hooks.syncDirectory(directoryFD); err != nil {
-			return classifyPreflightDirectorySync(err)
-		}
-		if err := contextError(ctx); err != nil {
-			return err
-		}
+	// A directory-sync capability check happens before openat creates an
+	// entry. If it cannot promise durability, no state record is emitted.
+	if err := hooks.syncDirectory(directoryFD); err != nil {
+		return classifyPreflightDirectorySync(err)
+	}
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 
-		fd, err := hooks.open(directoryFD, basename, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, durableFileMode)
-		if err != nil {
-			return classifyDurableOpenFailure(err)
+	fd, err := hooks.open(directoryFD, basename, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, durableFileMode)
+	if err != nil {
+		return classifyDurableOpenFailure(err)
+	}
+	openFD := fd
+	closed := false
+	defer func() {
+		if !closed && openFD >= 0 {
+			_ = hooks.close(openFD)
 		}
-		openFD := fd
-		closed := false
-		defer func() {
-			if !closed && openFD >= 0 {
-				_ = hooks.close(openFD)
-			}
-		}()
+	}()
 
-		// From here a directory entry may exist. Every error must retain it
-		// and become reconciliation rather than be disguised as a clean retry.
-		if err := contextError(ctx); err != nil {
-			return postCreateDurabilityError("context changed after record creation", err)
-		}
-		identity, err := snapshotPublishedRegularFile(openFD)
-		if err != nil {
-			return postCreateIdentityError("published entry identity", err)
-		}
-		if err := writeDurableFileContents(ctx, openFD, contents, hooks.write); err != nil {
-			return postCreateDurabilityError("write private record", err)
-		}
-		if err := hooks.syncFile(openFD); err != nil {
-			return postCreateDurabilityError("sync private record", err)
-		}
-		fdToClose := openFD
-		openFD = -1
-		closed = true
-		if err := hooks.close(fdToClose); err != nil {
-			return postCreateDurabilityError("close private record", err)
-		}
-		if err := contextError(ctx); err != nil {
-			return postCreateDurabilityError("context changed before directory sync", err)
-		}
-		if err := hooks.syncDirectory(directoryFD); err != nil {
-			return postCreateDurabilityError("sync private record directory", err)
-		}
-		if err := verifyPublishedName(ctx, directoryFD, basename, identity, contents); err != nil {
-			return postCreateIdentityError("published record name changed after durability sync", err)
-		}
-		return nil
-	})
+	// From here a directory entry may exist. Every error must retain it
+	// and become reconciliation rather than be disguised as a clean retry.
+	if err := contextError(ctx); err != nil {
+		return postCreateDurabilityError("context changed after record creation", err)
+	}
+	identity, err := snapshotPublishedRegularFile(openFD)
+	if err != nil {
+		return postCreateIdentityError("published entry identity", err)
+	}
+	if err := writeDurableFileContents(ctx, openFD, contents, hooks.write); err != nil {
+		return postCreateDurabilityError("write private record", err)
+	}
+	if err := hooks.syncFile(openFD); err != nil {
+		return postCreateDurabilityError("sync private record", err)
+	}
+	fdToClose := openFD
+	openFD = -1
+	closed = true
+	if err := hooks.close(fdToClose); err != nil {
+		return postCreateDurabilityError("close private record", err)
+	}
+	if err := contextError(ctx); err != nil {
+		return postCreateDurabilityError("context changed before directory sync", err)
+	}
+	if err := hooks.syncDirectory(directoryFD); err != nil {
+		return postCreateDurabilityError("sync private record directory", err)
+	}
+	if err := verifyPublishedName(ctx, directoryFD, basename, identity, contents); err != nil {
+		return postCreateIdentityError("published record name changed after durability sync", err)
+	}
+	return nil
 }
 
 func (hooks durableFileHooks) validate() error {

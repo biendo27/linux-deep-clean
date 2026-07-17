@@ -15,4 +15,8 @@ var (
 	// ErrRetained means content remains safely staged for recovery and must not
 	// be counted as freed space.
 	ErrRetained = errors.New("linux filesystem object retained for recovery")
+	// ErrLedgerNotInitialized means a read-only private-ledger session found no
+	// static lock or retained records. Callers may create the ledger only by
+	// entering an explicit write session through a qualified state lease.
+	ErrLedgerNotInitialized = errors.New("private ledger is not initialized")
 )

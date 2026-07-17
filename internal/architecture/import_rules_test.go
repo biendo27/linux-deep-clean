@@ -23,6 +23,7 @@ const (
 	helperCommandPath     = "cmd/linux-deep-clean-helper"
 	mountsPackagePath     = "internal/mounts"
 	linuxfsPackagePath    = "internal/linuxfs"
+	statePackagePath      = "internal/state"
 	trashPackagePath      = "internal/trash"
 	quarantinePackagePath = "internal/quarantine"
 )
@@ -53,6 +54,8 @@ func TestArchitectureImportAllowlists(t *testing.T) {
 	assertPathbytesImports(t, root, standardImports)
 	assertDomainImports(t, root, modulePath, standardImports)
 	assertPlanprotoImports(t, root, modulePath, standardImports)
+	assertStateImports(t, root, modulePath, standardImports)
+	assertPrivateLedgerAPIBoundary(t, root, modulePath)
 	assertMountsImports(t, root, modulePath, standardImports)
 	assertLinuxFSImports(t, root, modulePath, standardImports)
 	assertTrashImports(t, root, modulePath, standardImports)
@@ -675,6 +678,116 @@ func assertPlanprotoImports(t *testing.T, root, modulePath string, standardImpor
 			}
 		}
 	})
+}
+
+func assertStateImports(t *testing.T, root, modulePath string, standardImports map[string]struct{}) {
+	t.Helper()
+
+	linuxfsImport := modulePath + "/internal/linuxfs"
+	allowedImports := map[string]struct{}{
+		modulePath + "/internal/domain":    {},
+		linuxfsImport:                      {},
+		modulePath + "/internal/pathbytes": {},
+		modulePath + "/internal/planproto": {},
+		"github.com/fxamacker/cbor/v2":     {},
+	}
+	forEachProductionGoFile(t, root, statePackagePath, func(path string, file *ast.File) {
+		for _, importSpec := range file.Imports {
+			importPath, ok := importPathOf(t, path, importSpec)
+			if !ok {
+				continue
+			}
+			if _, standard := standardImports[importPath]; standard {
+				continue
+			}
+			if _, allowed := allowedImports[importPath]; !allowed {
+				t.Errorf("%s: state packages may import only the standard library, domain, pathbytes, planproto, the narrow linuxfs ledger boundary, or fxamacker/cbor/v2; found %q", pathFromRoot(root, path), importPath)
+			}
+		}
+		assertStateLinuxFSCallsAreLedgerOnly(t, root, modulePath, path, file)
+	})
+}
+
+func assertStateLinuxFSCallsAreLedgerOnly(t *testing.T, root, modulePath, path string, file *ast.File) {
+	t.Helper()
+
+	allowed := map[string]struct{}{
+		"NewPrivateLedgerRecordID":      {},
+		"RequiredStatMask":              {},
+		"WithPrivateLedgerReadSession":  {},
+		"WithPrivateLedgerWriteSession": {},
+	}
+	linuxfsImport := modulePath + "/internal/linuxfs"
+	aliases := productionImportAliases(t, path, file)
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		packageName, ok := selector.X.(*ast.Ident)
+		if !ok || aliases[packageName.Name] != linuxfsImport {
+			return true
+		}
+		if _, permitted := allowed[selector.Sel.Name]; !permitted {
+			t.Errorf("%s calls linuxfs.%s directly; state may use only private-ledger session primitives and pure precondition facts", pathFromRoot(root, path), selector.Sel.Name)
+		}
+		return true
+	})
+}
+
+// assertPrivateLedgerAPIBoundary keeps the raw LinuxFS ledger port owned by
+// state. LinuxFS cannot import its state client without a package cycle, so
+// the port is exported within the module; this repository boundary prevents
+// every other production package from bypassing state-owned token generation
+// and canonical frame validation.
+func assertPrivateLedgerAPIBoundary(t *testing.T, root, modulePath string) {
+	t.Helper()
+
+	linuxfsImport := modulePath + "/internal/linuxfs"
+	stateOnlySymbols := map[string]struct{}{
+		"NewPrivateLedgerRecordID":      {},
+		"PrivateLedgerRecordID":         {},
+		"PrivateLedgerSession":          {},
+		"WithPrivateLedgerReadSession":  {},
+		"WithPrivateLedgerWriteSession": {},
+	}
+
+	for _, directory := range []string{"cmd", "internal"} {
+		forEachProductionGoFile(t, root, directory, func(path string, file *ast.File) {
+			for _, importSpec := range file.Imports {
+				importPath, ok := importPathOf(t, path, importSpec)
+				if !ok || importPath != linuxfsImport || importSpec.Name == nil || importSpec.Name.Name != "." {
+					continue
+				}
+				t.Errorf("%s dot-imports linuxfs; the private ledger port must remain auditable and state-owned", pathFromRoot(root, path))
+			}
+
+			packagePath := filepath.ToSlash(filepath.Dir(pathFromRoot(root, path)))
+			if packagePath == linuxfsPackagePath || strings.HasPrefix(packagePath, linuxfsPackagePath+"/") || packagePath == statePackagePath || strings.HasPrefix(packagePath, statePackagePath+"/") {
+				return
+			}
+
+			aliases := productionImportAliases(t, path, file)
+			ast.Inspect(file, func(node ast.Node) bool {
+				selector, ok := node.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				packageName, ok := selector.X.(*ast.Ident)
+				if !ok || aliases[packageName.Name] != linuxfsImport {
+					return true
+				}
+				if _, stateOnly := stateOnlySymbols[selector.Sel.Name]; stateOnly {
+					t.Errorf("%s references linuxfs.%s; only %s may use the raw private-ledger port", pathFromRoot(root, path), selector.Sel.Name, statePackagePath)
+				}
+				return true
+			})
+		})
+	}
 }
 
 func assertMountsImports(t *testing.T, root, modulePath string, standardImports map[string]struct{}) {

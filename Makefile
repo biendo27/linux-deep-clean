@@ -50,6 +50,9 @@ coverage:
 	$(GO_ENV) $(GO) test -mod=readonly -count=1 -covermode=atomic -coverprofile=coverage/planproto.out ./internal/planproto
 	$(GO_ENV) $(GO) tool cover -func=coverage/planproto.out | tee coverage/planproto.func
 	awk '/^total:/ { found = 1; percent = $$3; sub(/%$$/, "", percent); if (percent + 0 < 90) { printf "internal/planproto coverage %s is below 90%%\n", $$3; exit 1 } } END { if (!found) { print "internal/planproto coverage total is missing"; exit 1 } }' coverage/planproto.func
+	$(GO_ENV) $(GO) test -mod=readonly -count=1 -covermode=atomic -coverprofile=coverage/state.out ./internal/state
+	$(GO_ENV) $(GO) tool cover -func=coverage/state.out | tee coverage/state.func
+	awk '/^total:/ { found = 1; percent = $$3; sub(/%$$/, "", percent); if (percent + 0 < 90) { printf "internal/state coverage %s is below 90%%\n", $$3; exit 1 } } END { if (!found) { print "internal/state coverage total is missing"; exit 1 } }' coverage/state.func
 	$(GO_ENV) $(GO) test -mod=readonly -count=1 -covermode=atomic -coverprofile=coverage/mounts.out ./internal/mounts
 	$(GO_ENV) $(GO) tool cover -func=coverage/mounts.out | tee coverage/mounts.func
 	awk '/^total:/ { found = 1; percent = $$3; sub(/%$$/, "", percent); if (percent + 0 < 90) { printf "internal/mounts coverage %s is below 90%%\n", $$3; exit 1 } } END { if (!found) { print "internal/mounts coverage total is missing"; exit 1 } }' coverage/mounts.func

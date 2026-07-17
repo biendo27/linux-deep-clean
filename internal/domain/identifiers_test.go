@@ -43,3 +43,30 @@ func TestPlanDigestUsesExactFixedLengthValue(t *testing.T) {
 		t.Fatalf("PlanDigest.Bytes() length = %d, want %d", len(digest.Bytes()), planDigestLength)
 	}
 }
+
+func TestActionBindingDigestUsesExactFixedLengthValue(t *testing.T) {
+	if _, err := NewActionBindingDigest(make([]byte, planDigestLength-1)); err == nil {
+		t.Fatal("NewActionBindingDigest(short) error = nil, want error")
+	}
+	if _, err := NewActionBindingDigest(make([]byte, planDigestLength)); err == nil {
+		t.Fatal("NewActionBindingDigest(zero) error = nil, want error")
+	}
+
+	canonicalBinding := []byte("canonical-action-binding")
+	digest := ComputeActionBindingDigest(canonicalBinding)
+	if err := digest.Validate(); err != nil {
+		t.Fatalf("ActionBindingDigest.Validate() error = %v", err)
+	}
+	if !digest.Verify(canonicalBinding) {
+		t.Fatal("action binding digest did not verify its canonical binding")
+	}
+	if digest.Verify([]byte("changed-action-binding")) {
+		t.Fatal("action binding digest verified changed canonical binding")
+	}
+	if len(digest.Bytes()) != planDigestLength {
+		t.Fatalf("ActionBindingDigest.Bytes() length = %d, want %d", len(digest.Bytes()), planDigestLength)
+	}
+	if len(digest.String()) != planDigestLength*2 {
+		t.Fatalf("ActionBindingDigest.String() length = %d, want %d", len(digest.String()), planDigestLength*2)
+	}
+}

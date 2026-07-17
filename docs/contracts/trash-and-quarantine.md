@@ -84,9 +84,13 @@ accepts a topology-qualified `mounts.TrashLease`, asks that lease to map a
 source-relative byte path to its fixed metadata basis, reselects the literal
 Trash topology, serializes the record, and delegates durable publication to
 `linuxfs`. The mapped path is lexical metadata only: this operation does not
-resolve, open, or prove a source exists. It must therefore be preceded by a
-future source-bound durable intent and token reservation before any content
-move can use it.
+resolve, open, or prove a source exists. Phase 4A now supplies its durable
+prerequisite through `state.RecoveryLedger`: over an already qualified private
+state lease it binds a validated Trash/quarantine action, plan digest, exact
+root/source/precondition, ledger-generated opaque token, closed destination,
+and pre-/post-effect facts in immutable records. The ledger is not a layout,
+source, or content authority. Phase 3B must consume it before a content move;
+the metadata-only API cannot do so by itself.
 
 `quarantine.OpenPerMountQuarantine` is similarly an open-only boundary. It
 accepts only a `LayoutPrivateQuarantine` lease and returns an opaque store with
@@ -96,15 +100,17 @@ content.
 
 No current API moves source content into `files`, restores content, removes
 metadata, reconciles an orphan, or proves a metadata/content pair. Those
-operations remain blocked on one-shot source-bound token reservation, durable
-intent/reconciliation records, and descriptor-rooted no-replace move, retain,
-and restore primitives.
+operations remain blocked on Phase 3B's consumption of the implemented
+source-bound ledger, plus descriptor-rooted no-replace move, retain, restore,
+and reconciliation primitives. A durable ledger record alone never authorizes
+or performs any content operation.
 
 ## Intended Trash ordering
 
 For a validated candidate, the ordered durable sequence is:
 
-1. Verify the source precondition and reserve a bounded opaque token.
+1. Verify the source precondition and reserve a bounded opaque token through
+   the durable recovery ledger.
 2. Create the owned `.trashinfo` file with no-replace/no-follow semantics;
    write and fsync the file, then fsync the `info` directory.
 3. Rename the source to `files/<token>` using no-replace semantics.
@@ -121,11 +127,13 @@ lease controls restoration.
 ## Reconciliation and retention
 
 Unknown rename or fsync state requires a durable private intent/state record
-and an indeterminate reconciliation probe. A generic scan of a user's Trash
-cannot establish LDC ownership. Therefore malformed, file-only, collision, and
-unknown orphan entries are retained and reported by default. Metadata-only
-entries may be cleaned only when a durable LDC-owned intent proves ownership
-and the corresponding cleanup is verified.
+and an indeterminate reconciliation probe. Phase 4A implements the private
+record and closed fact graph; Phase 3B must add the descriptor-rooted probe
+that records those facts. A generic scan of a user's Trash cannot establish
+LDC ownership. Therefore malformed, file-only, collision, and unknown orphan
+entries are retained and reported by default. Metadata-only entries may be
+cleaned only when a durable LDC-owned intent proves ownership and the
+corresponding cleanup is verified.
 
 Quarantine follows the same no-replace move/verify/sync rules but uses a
 separate authority-attested, private same-mount store. Retained content is

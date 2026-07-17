@@ -16,7 +16,10 @@ const (
 	planDigestLength = sha256.Size
 )
 
-var planDigestDomain = []byte("ldclean.plan.digest.v1\x00")
+var (
+	planDigestDomain          = []byte("ldclean.plan.digest.v1\x00")
+	actionBindingDigestDomain = []byte("ldclean.action-binding.digest.v1\x00")
+)
 
 // ProviderID identifies a compiled provider. It is not a filesystem path or
 // executable name.
@@ -64,6 +67,13 @@ const (
 // PlanDigest binds canonical plan-body bytes. It is audit evidence, not a MAC
 // and not an authorization token.
 type PlanDigest struct {
+	value [planDigestLength]byte
+}
+
+// ActionBindingDigest binds a canonical action representation to a plan
+// digest. It is audit/correlation evidence only: it does not prove that the
+// action is a member of a verified full plan and never grants authority.
+type ActionBindingDigest struct {
 	value [planDigestLength]byte
 }
 
@@ -182,6 +192,16 @@ func NewPlanDigest(value []byte) (PlanDigest, error) {
 	return PlanDigest{value: parsed}, nil
 }
 
+// NewActionBindingDigest constructs a nonzero action-binding digest from
+// exactly one SHA-256 value.
+func NewActionBindingDigest(value []byte) (ActionBindingDigest, error) {
+	parsed, err := newDigest(value)
+	if err != nil {
+		return ActionBindingDigest{}, err
+	}
+	return ActionBindingDigest{value: parsed}, nil
+}
+
 func NewConfigDigest(value []byte) (ConfigDigest, error) {
 	parsed, err := newDigest(value)
 	if err != nil {
@@ -209,21 +229,44 @@ func ComputePlanDigest(canonicalBody []byte) PlanDigest {
 	return PlanDigest{value: value}
 }
 
+// ComputeActionBindingDigest hashes canonical action-binding bytes with the
+// fixed v1 domain separator. The canonical bytes must include the plan digest
+// and action representation; this function does not establish plan membership.
+func ComputeActionBindingDigest(canonicalBinding []byte) ActionBindingDigest {
+	hash := sha256.New()
+	_, _ = hash.Write(actionBindingDigestDomain)
+	_, _ = hash.Write(canonicalBinding)
+	var value [planDigestLength]byte
+	copy(value[:], hash.Sum(nil))
+	return ActionBindingDigest{value: value}
+}
+
 // Verify reports whether canonical body bytes bind to this digest. It does not
 // grant authority and must not be used as an authorization decision.
 func (digest PlanDigest) Verify(canonicalBody []byte) bool {
 	return digest == ComputePlanDigest(canonicalBody)
 }
 
-func (digest PlanDigest) Bytes() []byte     { return append([]byte(nil), digest.value[:]...) }
-func (digest ConfigDigest) Bytes() []byte   { return append([]byte(nil), digest.value[:]...) }
-func (digest EvidenceDigest) Bytes() []byte { return append([]byte(nil), digest.value[:]...) }
+// Verify reports whether canonical action-binding bytes bind to this digest.
+// It is not an authorization or full-plan-membership decision.
+func (digest ActionBindingDigest) Verify(canonicalBinding []byte) bool {
+	return digest == ComputeActionBindingDigest(canonicalBinding)
+}
 
-func (digest PlanDigest) String() string     { return hex.EncodeToString(digest.value[:]) }
-func (digest ConfigDigest) String() string   { return hex.EncodeToString(digest.value[:]) }
-func (digest EvidenceDigest) String() string { return hex.EncodeToString(digest.value[:]) }
+func (digest PlanDigest) Bytes() []byte          { return append([]byte(nil), digest.value[:]...) }
+func (digest ActionBindingDigest) Bytes() []byte { return append([]byte(nil), digest.value[:]...) }
+func (digest ConfigDigest) Bytes() []byte        { return append([]byte(nil), digest.value[:]...) }
+func (digest EvidenceDigest) Bytes() []byte      { return append([]byte(nil), digest.value[:]...) }
 
-func (digest PlanDigest) Validate() error     { return validateDigest("plan digest", digest.value) }
+func (digest PlanDigest) String() string          { return hex.EncodeToString(digest.value[:]) }
+func (digest ActionBindingDigest) String() string { return hex.EncodeToString(digest.value[:]) }
+func (digest ConfigDigest) String() string        { return hex.EncodeToString(digest.value[:]) }
+func (digest EvidenceDigest) String() string      { return hex.EncodeToString(digest.value[:]) }
+
+func (digest PlanDigest) Validate() error { return validateDigest("plan digest", digest.value) }
+func (digest ActionBindingDigest) Validate() error {
+	return validateDigest("action binding digest", digest.value)
+}
 func (digest ConfigDigest) Validate() error   { return validateDigest("config digest", digest.value) }
 func (digest EvidenceDigest) Validate() error { return validateDigest("evidence digest", digest.value) }
 

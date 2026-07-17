@@ -9,11 +9,28 @@ dependencies: [2]
 
 # Phase 3: Linux Filesystem Safety and Trash
 
+> **Composite reference document.** Formal execution nodes are now
+> [Phase 3A](./phase-03a-safety-foundation.md) and
+> [Phase 3B](./phase-03b-content-operations.md). This document preserves the
+> original complete requirements and is not an additional dependency node.
+
 ## Overview
 
 Implement the only filesystem mutation primitives later phases may use: trusted-root leases, mount qualification, `openat2` parent resolution, action-specific `statx` comparison, same-filesystem no-replace staging, descriptor-relative removal, Freedesktop Trash, quarantine, restoration, and crash reconciliation. No provider or user command may mutate yet.
 
 The enforceable claim is narrow: traversal cannot escape held root/staging descriptors; a raced final entry is never permanently deleted unless its post-stage identity matches; ambiguity becomes drift/unsupported/retained. Context: [filesystem safety research](./research/02-filesystem-and-privilege-safety.md).
+
+## Approved 3A/4A/3B Boundary
+
+Phase 3A delivered the checked safety foundation marked complete below. The
+user-approved [Phase 4A ledger](./phase-04a-durable-intent-ledger.md) now
+precedes Phase 3B solely to resolve the durable-intent dependency cycle.
+Phase 4A records private state only; it cannot register a root or layout,
+select a Trash/quarantine location, move content, restore content, reconcile
+content, or enable a command. Phase 3B may use the completed 4A ledger port
+for `ReserveTrashToken`, move/restore, retention, and reconciliation only
+after a real engine/helper-owned layout authority and the existing VM gates
+are independently satisfied.
 
 ## Requirements
 
@@ -152,7 +169,7 @@ Default/focused tests require no root, mounts, network, or authorization. VM com
 2. Add root/mount RED tests, then implement `RootLease`, mountinfo parser, namespace/filesystem/ownership checks, and held-FD lifetime.
 3. Add resolution/snapshot/staging RED tests, then implement parent+basename resolution, action masks, no-replace stage, post-stage compare, restore/retain, and descriptor walk.
 4. Prove `renameat2` and `unlinkat` call sites are limited to `internal/linuxfs` and accept one component only; Trash/quarantine/state compose the rooted API rather than issuing raw syscalls. Update architecture scan.
-5. Add Trash/quarantine RED tests and crash-state table. Implement layout validation, shared token reservation, metadata percent encoding/date, ordered fsync, move, restore, retention, and reconciliation.
+5. After Phase 4A, add Trash/quarantine RED tests and crash-state table. Consume its durable source-bound reservation/transition port; then implement layout validation, metadata percent encoding/date, ordered fsync, move, restore, retention, and reconciliation without adding a second state store.
 6. Build deterministic barrier actors and outside sentinels. Record kernel/arch/FS/mount options/schedule/seed/result/quarantine for replay. Use only production APIs.
 7. Run focused/race/integration gates. In disposable VMs run PR ext4 smoke; defer the required 30,000 total supported-filesystem release campaign to Phase 11 but keep the same harness and recorded seeds.
 8. Review every error path for FD closure and one of: verified success, explicit drift, safe no-replace restoration, retained handle, unsupported, or indeterminate reconciliation.
@@ -181,4 +198,4 @@ Rollback disables all filesystem mutation call sites and removes Phase 3 package
 
 ## Phase Exit and Hand-Off
 
-Exit only after the unprivileged gates and PR ext4 smoke pass and the exact safe quarantine layout decision is recorded. Hand Phase 4 immutable safety APIs, action-specific masks, typed recovery handles, supported/unsupported reasons, crash reconciliation states, and race replay format. Phase 4 may persist/orchestrate these facts but cannot add a weaker filesystem path.
+Phase 3A hands the Phase 4A ledger only immutable safety types, action-specific masks, and descriptor-rooted private-directory publication; the ledger may persist facts but cannot add a weaker filesystem path. Phase 3B exits only after the unprivileged gates and PR ext4 smoke pass and the exact safe quarantine layout decision is recorded. It then hands Phase 4B immutable safety APIs, typed recovery handles, supported/unsupported reasons, crash reconciliation states, and race replay format.

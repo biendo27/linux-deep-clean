@@ -1,17 +1,19 @@
 ---
-phase: 4
-title: "Policy Engine, State, and Recovery"
+phase: "4B"
+title: "Policy Engine, State, and Recovery (4B)"
 status: pending
 priority: P1
 effort: "15-20 engineer-days"
-dependencies: [3]
+dependencies: ["3B", "4A"]
 ---
 
-# Phase 4: Policy Engine, State, and Recovery
+# Phase 4B: Policy Engine, State, and Recovery
 
 ## Overview
 
 Build the presenter-neutral application core: capability/provider registries, monotonic policy, deterministic selection/planning, an explicit-apply coordinator, private XDG configuration/state/history, and crash reconciliation. With no executors registered, apply remains deliberately fail-closed/preview-only at phase exit.
+
+The narrowly scoped [Phase 4A durable intent and recovery ledger](./phase-04a-durable-intent-ledger.md) is an already-established dependency, not authorization to begin this broader phase early. Phase 4B must reuse its record schema and narrow port rather than replace it with a path-based or in-memory store.
 
 This phase creates real durable state and pure policy/planning behavior, not dummy providers or mutation mocks. Context: [configuration/state design](../reports/260714-1754-ldc-linux-native-design-report.md#configuration-state-and-privacy), [scout](./reports/scout-report.md#phase-4--policy-engine-state-and-recovery).
 
@@ -28,7 +30,7 @@ This phase creates real durable state and pure policy/planning behavior, not dum
 - Cancellation stops before the next safe dependency group, records completed actions, and marks a dispatched-but-unverifiable action `indeterminate` with reconciliation. Partial independent continuation follows explicit action dependencies only.
 - Persist private XDG layout: config/protection at config home; plans/results/history/recovery at state home; rebuildable indexes at cache home; ephemeral authorization material at runtime. Respect specification fallbacks, modes 0700/0600, no-follow/rooted writes, and never classify these paths as cleanup candidates.
 - History is append-oriented/versioned and private. Reads report a corrupt/truncated tail without changing it. Repair is a separate previewed `repair_state` action that preserves the original and would publish a verified replacement only after a later explicit apply.
-- `LDCLEAN_NO_HISTORY=1` or config may disable optional history, but never the minimal recovery ledger needed to avoid unsafe replay. Store no credentials/tokens and make no telemetry/network request.
+- `LDCLEAN_NO_HISTORY=1` or config may disable optional history, but never the minimal recovery ledger needed to avoid unsafe replay. Store no credentials, authorization/session tokens, or telemetry identifiers; required opaque recovery identifiers from Phase 4A remain private recovery facts, not credentials or authorization.
 
 ### Non-Functional
 

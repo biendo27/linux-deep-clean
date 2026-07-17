@@ -80,7 +80,7 @@ jobs:
                 go test -mod=readonly ./internal/planproto -run "TestStrictDecoderRejectsNonCanonicalCorpus|TestPlanV1GoldenCompatibility" -count=100
             '
 
-      - name: Enforce bootstrap and Phase 2 coverage in a network namespace
+      - name: Enforce coverage gates in a network namespace
         run: |
           runner_user="$(id -un)"
           runner_home="$HOME"

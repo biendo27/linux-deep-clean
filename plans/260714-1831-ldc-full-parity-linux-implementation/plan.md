@@ -64,12 +64,40 @@ helper -> dependency-free domain + strict protocol + helper policy + linuxfs + m
 ## Dependency Graph
 
 ```text
-Phase 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11
-                 safety core       user mutation  reject-only  privileged
-                                              helper gate       mutation
+Phase 1 -> 2 -> 3A -> 4A -> 3B -> 4B -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11
+                 safety    ledger   content                  user mutation
+                 foundation          primitives              / first apply
 ```
 
-Later implementation may parallelize read-only adapters behind stable Phase 4 interfaces, but phase acceptance is sequential. No mutation bypasses Phase 3 primitives; no privileged executor exists before Phase 8's installed reject-only helper passes.
+Later implementation may parallelize read-only adapters behind stable Phase 4 interfaces, but phase acceptance is sequential except for the narrowly approved Phase 4A interphase dependency below. No mutation bypasses Phase 3 primitives; no privileged executor exists before Phase 8's installed reject-only helper passes.
+
+## Approved Phase 3/4 Interphase Boundary
+
+The original sequential order contains a verified dependency cycle: Phase 3
+content moves and reconciliation need a durable source-bound intent, while
+Phase 4 owns that mandatory recovery state. The user approved this exact,
+limited order:
+
+```text
+Phase 3A safety foundation -> Phase 4A durable intent ledger
+-> Phase 3B content-operation primitives -> Phase 4B remainder
+-> Phases 5/6 -> Phase 7 first production apply
+```
+
+Phase 4A is only the [durable intent and recovery ledger](./phase-04a-durable-intent-ledger.md).
+It owns a configuration/private-state-backed, versioned, bounded,
+descriptor-rooted ledger and no more. It may bind source facts and record
+pre-/post-effect transitions, but it may not add a root/layout registry,
+XDG discovery/composition, providers, planner, application service,
+executor, command, target/layout discovery, content mutation, arbitrary path
+authority, or an in-memory production store. It does not satisfy Phase 3's
+per-mount layout-authority or disposable-VM gates.
+
+Phase 3B may consume only that narrow ledger port to implement the already
+planned Trash/quarantine content primitives. Actual production root/layout
+registration, explicit-plan application, and VM mutation qualification remain
+with their established later owners; a ledger record never authorizes an
+operation by itself.
 
 ## Phases
 
@@ -77,8 +105,10 @@ Later implementation may parallelize read-only adapters behind stable Phase 4 in
 |---:|---|---|---|
 | 1 | [Repository, toolchain, and contract harness](./phase-01-start.md) | Completed | Permanent remote/module selected; hermetic harness and import gates pass |
 | 2 | [Canonical domain and plan protocol](./phase-02-canonical-domain-and-plan-protocol.md) | Completed | BytePath, schema, deterministic CBOR/digest, and result states frozen |
-| 3 | [Linux filesystem safety and Trash](./phase-03-linux-filesystem-safety-and-trash.md) | In progress | Anchored staging, durability/reconciliation, and adversarial smoke gates pass |
-| 4 | [Policy engine, state, and recovery](./phase-04-policy-engine-state-and-recovery.md) | Pending | Deterministic planning, monotonic policy, private durable state, recovery pass |
+| 3A | [Linux filesystem safety foundation](./phase-03a-safety-foundation.md) | Completed | Descriptor-rooted safety primitives and metadata-only composition pass without content mutation |
+| 4A | [Durable intent and recovery ledger](./phase-04a-durable-intent-ledger.md) | Completed | Bounded descriptor-rooted intent/recovery facts persist and reload without content mutation |
+| 3B | [Linux filesystem content operations](./phase-03b-content-operations.md) | Pending | Anchored ledger-backed Trash/quarantine content operations and adversarial smoke gates pass |
+| 4B | [Policy engine, state, and recovery](./phase-04-policy-engine-state-and-recovery.md) | Pending | Deterministic planning, monotonic policy, private durable state, recovery pass |
 | 5 | [Provider discovery and read-only inventory](./phase-05-provider-discovery-and-read-only-inventory.md) | Pending | Supported provider parsers and inventory contracts pass without mutation |
 | 6 | [CLI, structured output, and TUI](./phase-06-cli-structured-output-and-tui.md) | Pending | Exact command/alias, schema, no-TTY, and presenter-authority gates pass |
 | 7 | [User-owned mutation and installer cleanup](./phase-07-user-owned-mutation-and-installer-cleanup.md) | Pending | Explicit apply, Trash/default purge, installer, cancellation, recovery pass |
@@ -91,7 +121,9 @@ Phase 1 completion evidence: [bootstrap handoff report](./reports/pm-260715-2132
 
 Phase 2 completion evidence: [canonical protocol handoff report](./reports/pm-260716-1254-phase-2-canonical-protocol.md).
 
-Phase 3 safety-foundation evidence: [in-progress handoff report](./reports/pm-260716-phase-3-safety-foundation.md). The phase remains gated on an engine/helper-owned per-mount layout authority and disposable-VM qualification; no production command or composition enables user-content mutation.
+Phase 3A safety-foundation evidence: [in-progress handoff report](./reports/pm-260716-phase-3-safety-foundation.md). The composite Phase 3 requirements remain preserved in [the original execution document](./phase-03-linux-filesystem-safety-and-trash.md); its completed safety work is formalized by 3A and its remaining content work by 3B. Phase 3B remains gated on an engine/helper-owned per-mount layout authority and disposable-VM qualification; Phase 4A does not relax either gate or enable a production command/composition.
+
+Phase 4A completion evidence: [durable intent and recovery ledger report](./reports/pm-260717-phase-4a-durable-intent-ledger.md). The next node is Phase 3B; Phase 4A itself adds no content operation or production composition.
 
 ## Decision and Entry Gates
 
