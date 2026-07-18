@@ -92,20 +92,50 @@ and pre-/post-effect facts in immutable records. The ledger is not a layout,
 source, or content authority. Phase 3B must consume it before a content move;
 the metadata-only API cannot do so by itself.
 
-`quarantine.OpenPerMountQuarantine` is similarly an open-only boundary. It
-accepts only a `LayoutPrivateQuarantine` lease and returns an opaque store with
-the trusted root identity and idempotent close. It exposes neither a pathname
-nor a descriptor and cannot retain, restore, scan, remove, or otherwise mutate
+`recoveryport.Ledger` is the data-only Phase 4A bridge used by content policy.
+It reserves the opaque LDC token and persists the closed pre-/post-effect fact
+graph, but exposes no descriptor, layout, or content-mutation authority.
+`state.RecoveryLedgerPort` is its production adapter.
+
+`trash.MoveToTrash` is the current high-level content composition boundary. It
+accepts an already-resolved source parent, a topology-qualified Trash lease,
+and a validated immutable Trash action; it verifies that the held parent was
+resolved for the exact planned target before reserving the ledger token or
+publishing metadata. It then records metadata and move dispatch facts before
+their respective effects, binds the durable metadata receipt to the move, and
+records a verified or indeterminate outcome. A known no-replace collision
+retains metadata and durable history rather than deleting either entry. It
+never copies, overwrites, or reports freed space.
+
+`linuxfs.MovePublishedTrashNoReplace` is the descriptor-rooted lower-level
+move primitive consumed by that facade. It requires a topology-qualified
+directory pair and the exact metadata receipt, proves the source identity and
+rejects protected Trash structure, then uses `RENAME_NOREPLACE`, post-move
+identity verification, directory sync, and topology reproof.
+`linuxfs.RestoreTrashNoReplace` is likewise a descriptor-rooted no-replace
+primitive for a known ticket token and original source parent. It verifies the
+retained content before restoring it and verifies and syncs a successful
+restore, but deliberately retains the `.trashinfo` record. It is not a
+ledger-closing recovery operation: current same-UID Trash authority cannot
+safely unlink a name after classifying it.
+
+`quarantine.OpenPerMountQuarantine` remains an open-only boundary. It accepts
+only a `LayoutPrivateQuarantine` lease and returns an opaque store with the
+trusted root identity and idempotent close. It exposes neither a pathname nor
+a descriptor and cannot retain, restore, scan, remove, or otherwise mutate
 content.
 
-No current API moves source content into `files`, restores content, removes
-metadata, reconciles an orphan, or proves a metadata/content pair. Those
-operations remain blocked on Phase 3B's consumption of the implemented
-source-bound ledger, plus descriptor-rooted no-replace move, retain, restore,
-and reconciliation primitives. A durable ledger record alone never authorizes
-or performs any content operation.
+There is not yet a high-level Trash restoration/reconciliation API, a
+descriptor-rooted orphan probe, a quarantine content operation, or
+`domain.RecoveryHandle`/`domain.ActionResult` composition. A durable ledger
+record alone never authorizes or performs any content operation.
 
-## Intended Trash ordering
+## Required eventual Trash ordering
+
+The sequence below is the completion contract, not a claim about the current
+low-level restore primitive. Its final metadata disposition remains blocked on
+an authority that can prove safe removal or retention without a same-UID
+replacement race.
 
 For a validated candidate, the ordered durable sequence is:
 

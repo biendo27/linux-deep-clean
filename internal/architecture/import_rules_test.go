@@ -19,13 +19,14 @@ import (
 )
 
 const (
-	mainCommandPath       = "cmd/ldclean"
-	helperCommandPath     = "cmd/linux-deep-clean-helper"
-	mountsPackagePath     = "internal/mounts"
-	linuxfsPackagePath    = "internal/linuxfs"
-	statePackagePath      = "internal/state"
-	trashPackagePath      = "internal/trash"
-	quarantinePackagePath = "internal/quarantine"
+	mainCommandPath         = "cmd/ldclean"
+	helperCommandPath       = "cmd/linux-deep-clean-helper"
+	mountsPackagePath       = "internal/mounts"
+	linuxfsPackagePath      = "internal/linuxfs"
+	recoveryportPackagePath = "internal/recoveryport"
+	statePackagePath        = "internal/state"
+	trashPackagePath        = "internal/trash"
+	quarantinePackagePath   = "internal/quarantine"
 )
 
 type listedPackage struct {
@@ -54,6 +55,7 @@ func TestArchitectureImportAllowlists(t *testing.T) {
 	assertPathbytesImports(t, root, standardImports)
 	assertDomainImports(t, root, modulePath, standardImports)
 	assertPlanprotoImports(t, root, modulePath, standardImports)
+	assertRecoveryPortImports(t, root, modulePath, standardImports)
 	assertStateImports(t, root, modulePath, standardImports)
 	assertPrivateLedgerAPIBoundary(t, root, modulePath)
 	assertMountsImports(t, root, modulePath, standardImports)
@@ -680,16 +682,40 @@ func assertPlanprotoImports(t *testing.T, root, modulePath string, standardImpor
 	})
 }
 
+func assertRecoveryPortImports(t *testing.T, root, modulePath string, standardImports map[string]struct{}) {
+	t.Helper()
+
+	allowedImports := map[string]struct{}{
+		modulePath + "/internal/domain":    {},
+		modulePath + "/internal/pathbytes": {},
+	}
+	forEachProductionGoFile(t, root, recoveryportPackagePath, func(path string, file *ast.File) {
+		for _, importSpec := range file.Imports {
+			importPath, ok := importPathOf(t, path, importSpec)
+			if !ok {
+				continue
+			}
+			if _, standard := standardImports[importPath]; standard {
+				continue
+			}
+			if _, allowed := allowedImports[importPath]; !allowed {
+				t.Errorf("%s: recoveryport packages may import only the standard library, internal/domain, or internal/pathbytes; found %q", pathFromRoot(root, path), importPath)
+			}
+		}
+	})
+}
+
 func assertStateImports(t *testing.T, root, modulePath string, standardImports map[string]struct{}) {
 	t.Helper()
 
 	linuxfsImport := modulePath + "/internal/linuxfs"
 	allowedImports := map[string]struct{}{
-		modulePath + "/internal/domain":    {},
-		linuxfsImport:                      {},
-		modulePath + "/internal/pathbytes": {},
-		modulePath + "/internal/planproto": {},
-		"github.com/fxamacker/cbor/v2":     {},
+		modulePath + "/internal/domain":       {},
+		linuxfsImport:                         {},
+		modulePath + "/internal/pathbytes":    {},
+		modulePath + "/internal/planproto":    {},
+		modulePath + "/internal/recoveryport": {},
+		"github.com/fxamacker/cbor/v2":        {},
 	}
 	forEachProductionGoFile(t, root, statePackagePath, func(path string, file *ast.File) {
 		for _, importSpec := range file.Imports {
@@ -701,7 +727,7 @@ func assertStateImports(t *testing.T, root, modulePath string, standardImports m
 				continue
 			}
 			if _, allowed := allowedImports[importPath]; !allowed {
-				t.Errorf("%s: state packages may import only the standard library, domain, pathbytes, planproto, the narrow linuxfs ledger boundary, or fxamacker/cbor/v2; found %q", pathFromRoot(root, path), importPath)
+				t.Errorf("%s: state packages may import only the standard library, domain, pathbytes, planproto, recoveryport, the narrow linuxfs ledger boundary, or fxamacker/cbor/v2; found %q", pathFromRoot(root, path), importPath)
 			}
 		}
 		assertStateLinuxFSCallsAreLedgerOnly(t, root, modulePath, path, file)
@@ -815,10 +841,11 @@ func assertTrashImports(t *testing.T, root, modulePath string, standardImports m
 	t.Helper()
 
 	assertSafetyPackageImports(t, root, trashPackagePath, standardImports, map[string]struct{}{
-		modulePath + "/internal/domain":    {},
-		modulePath + "/internal/linuxfs":   {},
-		modulePath + "/internal/mounts":    {},
-		modulePath + "/internal/pathbytes": {},
+		modulePath + "/internal/domain":       {},
+		modulePath + "/internal/linuxfs":      {},
+		modulePath + "/internal/mounts":       {},
+		modulePath + "/internal/pathbytes":    {},
+		modulePath + "/internal/recoveryport": {},
 	})
 }
 
@@ -826,10 +853,11 @@ func assertQuarantineImports(t *testing.T, root, modulePath string, standardImpo
 	t.Helper()
 
 	assertSafetyPackageImports(t, root, quarantinePackagePath, standardImports, map[string]struct{}{
-		modulePath + "/internal/domain":    {},
-		modulePath + "/internal/linuxfs":   {},
-		modulePath + "/internal/mounts":    {},
-		modulePath + "/internal/pathbytes": {},
+		modulePath + "/internal/domain":       {},
+		modulePath + "/internal/linuxfs":      {},
+		modulePath + "/internal/mounts":       {},
+		modulePath + "/internal/pathbytes":    {},
+		modulePath + "/internal/recoveryport": {},
 	})
 }
 

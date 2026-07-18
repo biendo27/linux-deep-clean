@@ -107,7 +107,7 @@ operation by itself.
 | 2 | [Canonical domain and plan protocol](./phase-02-canonical-domain-and-plan-protocol.md) | Completed | BytePath, schema, deterministic CBOR/digest, and result states frozen |
 | 3A | [Linux filesystem safety foundation](./phase-03a-safety-foundation.md) | Completed | Descriptor-rooted safety primitives and metadata-only composition pass without content mutation |
 | 4A | [Durable intent and recovery ledger](./phase-04a-durable-intent-ledger.md) | Completed | Bounded descriptor-rooted intent/recovery facts persist and reload without content mutation |
-| 3B | [Linux filesystem content operations](./phase-03b-content-operations.md) | Pending | Anchored ledger-backed Trash/quarantine content operations and adversarial smoke gates pass |
+| 3B | [Linux filesystem content operations](./phase-03b-content-operations.md) | In progress | Anchored ledger-backed Trash/quarantine content operations and adversarial smoke gates pass |
 | 4B | [Policy engine, state, and recovery](./phase-04-policy-engine-state-and-recovery.md) | Pending | Deterministic planning, monotonic policy, private durable state, recovery pass |
 | 5 | [Provider discovery and read-only inventory](./phase-05-provider-discovery-and-read-only-inventory.md) | Pending | Supported provider parsers and inventory contracts pass without mutation |
 | 6 | [CLI, structured output, and TUI](./phase-06-cli-structured-output-and-tui.md) | Pending | Exact command/alias, schema, no-TTY, and presenter-authority gates pass |

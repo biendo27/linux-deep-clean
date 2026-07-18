@@ -1,7 +1,7 @@
 ---
 phase: "3B"
 title: "Linux Filesystem Content Operations"
-status: pending
+status: in-progress
 priority: P1
 effort: "remaining subset of Phase 3"
 dependencies: ["3A", "4A"]

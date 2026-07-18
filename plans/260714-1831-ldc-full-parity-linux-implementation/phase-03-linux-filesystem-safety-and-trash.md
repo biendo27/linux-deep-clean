@@ -78,7 +78,8 @@ match: FD-walk removal OR finalize Trash/quarantine durability
 - [x] `mounts.TrashAuthority`, `TrashRegistry`, `OpenTrustedTrash`, and `linuxfs.OpenTrashDirectories` bind an engine/helper-selected descriptor bundle and lend only requalified `files`/`info` duplicates to `linuxfs`; `PublishTrashInfoDurable` durably publishes one bounded LDC metadata record. The legacy API remains a metadata-only pre-selector.
 - [x] `trash.SelectTrashRoot`, `ValidateTrashLayout`, and `linuxfs.OpenTopologyQualifiedTrashDirectories` require engine/helper-attested anchor evidence, prove literal Home/`.Trash-$uid`/`.Trash/$uid` plus `files`/`info` relationships with descriptor-rooted `openat2`, and requalify the proof at point of use. They do not discover a Trash location.
 - [x] `WriteTrashInfoDurable` maps a lease-attested lexical metadata path, reselects topology, serializes bounded metadata, and durably publishes it. It does not resolve the source, reserve a token, move content, or issue a recovery handle.
-- [ ] `ReserveTrashToken`, `MoveToTrash`, `RestoreFromTrash`, `ReconcileTrashOrphans`.
+- [x] `recoveryport.Ledger.Reserve`, `linuxfs.MovePublishedTrashNoReplace`, and `trash.MoveToTrash` provide a ledger-backed, receipt-bound no-replace Trash move. `linuxfs.RestoreTrashNoReplace` provides a descriptor-rooted low-level restoration that deliberately retains metadata.
+- [ ] `trash.RestoreFromTrash` and `ReconcileTrashOrphans`, including a recovery-safe metadata disposition after restoration.
 - [x] `quarantine.OpenPerMountQuarantine` accepts only a requalified `LayoutPrivateQuarantine` lease and exposes root metadata plus idempotent close; it exposes no path, descriptor, or content mutation.
 - [ ] `Retain`, `RestoreNoReplace`, `ApplyRetention`, `ReconcileRetained`; retention removal still uses verified staged-tree primitives.
 - [x] `domain.RecoveryHandle` identifies root/token/original `BytePath`/date without absolute-path authority; `domain.ActionResult` distinguishes restored, retained, drifted, interrupted, and indeterminate outcomes.
@@ -88,7 +89,7 @@ match: FD-walk removal OR finalize Trash/quarantine durability
 
 - `mounts` may import domain/pathbytes, `x/sys/unix`, and standard library only.
 - `linuxfs` may import mounts/domain/pathbytes and `x/sys/unix`; it never imports providers, presenters, state, application, manager execution, or privilege protocol.
-- `trash` and `quarantine` may import linuxfs/mounts/domain/pathbytes only. They cannot call shell commands or reconstruct absolute apply paths.
+- `trash` and `quarantine` may import linuxfs/mounts/domain/pathbytes and the data-only `recoveryport` only. They cannot call shell commands or reconstruct absolute apply paths.
 - Providers/presenters cannot import mounts/linuxfs/trash/quarantine. Later executors and the private state store may compose these APIs; architecture tests prohibit direct `renameat2`, `unlinkat`, or equivalent pathname mutation outside this safety layer.
 
 ## Related Code Files

@@ -322,6 +322,80 @@ func OpenTargetHandle(ctx context.Context, parent *ParentLease, basename string)
 	return &TargetHandle{fd: targetFD}, nil
 }
 
+// ValidateResolvedTarget proves that a held parent lease names the exact
+// precondition target and that its current filesystem identity still matches.
+// It is read-only: callers use it before recording or publishing a related
+// durable effect, never as a source of new pathname authority.
+func ValidateResolvedTarget(
+	ctx context.Context,
+	parent *ParentLease,
+	basename string,
+	expected domain.FilesystemPrecondition,
+) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	if err := ValidateResolvedParentForTarget(parent, basename, expected); err != nil {
+		return err
+	}
+
+	clonedExpected := expected
+	clonedExpected.Target = expected.Target.Clone()
+	handle, err := OpenTargetHandle(ctx, parent, basename)
+	if err != nil {
+		return err
+	}
+	defer handle.Close()
+	observed, err := handle.Snapshot(clonedExpected.Required)
+	if err != nil {
+		return err
+	}
+	return ComparePrecondition(clonedExpected, observed)
+}
+
+// ValidateResolvedParentForTarget proves that a held parent lease was
+// resolved for the exact precondition target. It does not open the final
+// basename, so it is suitable for validating a vacant no-replace restoration
+// destination before the restoration is durably dispatched.
+func ValidateResolvedParentForTarget(
+	parent *ParentLease,
+	basename string,
+	expected domain.FilesystemPrecondition,
+) error {
+	if parent == nil {
+		return fmt.Errorf("%w: parent lease is required", ErrUnsupported)
+	}
+	if err := validateBasename(basename); err != nil {
+		return err
+	}
+
+	clonedExpected := expected
+	clonedExpected.Target = expected.Target.Clone()
+	if err := clonedExpected.Validate(); err != nil {
+		return fmt.Errorf("%w: invalid filesystem precondition: %v", ErrUnsupported, err)
+	}
+	if clonedExpected.Target.Filesystem == nil {
+		return fmt.Errorf("%w: filesystem precondition has no filesystem target", ErrUnsupported)
+	}
+	components, expectedBasename, err := pathComponentsAndBasename(clonedExpected.Target.Filesystem.Path)
+	if err != nil || len(components) == 0 {
+		return fmt.Errorf("%w: invalid expected filesystem target path", ErrUnsupported)
+	}
+	if expectedBasename != basename {
+		return fmt.Errorf("%w: source basename does not match the precondition target", ErrUnsupported)
+	}
+	if err := clonedExpected.Target.Filesystem.Root.Validate(); err != nil {
+		return fmt.Errorf("%w: precondition root identity: %v", ErrUnsupported, err)
+	}
+	if parent.RootID() == "" || parent.RootID() != clonedExpected.Target.Filesystem.Root {
+		return fmt.Errorf("%w: parent lease and precondition roots differ", ErrUnsupported)
+	}
+	if !sameBytePath(parent.plannedPath, clonedExpected.Target.Filesystem.Path) {
+		return fmt.Errorf("%w: parent lease was not resolved for the precondition target", ErrUnsupported)
+	}
+	return nil
+}
+
 func pathComponentsAndBasename(path pathbytes.BytePath) ([]string, string, error) {
 	components := path.Components()
 	if _, err := pathbytes.New(components); err != nil {
