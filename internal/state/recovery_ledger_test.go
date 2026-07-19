@@ -2,9 +2,12 @@ package state
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"sync"
 	"testing"
@@ -13,6 +16,7 @@ import (
 	"github.com/biendo27/linux-deep-clean/internal/linuxfs"
 	"github.com/biendo27/linux-deep-clean/internal/pathbytes"
 	"github.com/biendo27/linux-deep-clean/internal/planproto"
+	"github.com/biendo27/linux-deep-clean/internal/recoveryport"
 )
 
 func TestRecoveryFrameRoundTripsCanonicalImmutableBinding(t *testing.T) {
@@ -53,6 +57,239 @@ func TestRecoveryFrameRoundTripsCanonicalImmutableBinding(t *testing.T) {
 	if !bytes.Equal(encoded, canonical) {
 		t.Fatal("frame did not retain canonical bytes after decode/re-encode")
 	}
+}
+
+func TestRecoveryV2RequiresAndPreservesTrashLayoutBinding(t *testing.T) {
+	ctx := context.Background()
+	sessions := newTestRecoveryLedgerSessions()
+	ledger := newTestRecoveryLedger(sessions)
+	trashAction := testRecoveryAction(t, domain.ActionTrashPath)
+	planDigest := testRecoveryPlanDigest(t)
+
+	if _, err := ledger.Reserve(ctx, trashAction, planDigest, RecoveryReservation{}); !errors.Is(err, ErrRecoveryUnsupported) {
+		t.Fatalf("Reserve(TrashPath without binding) error = %v, want ErrRecoveryUnsupported", err)
+	}
+	if records := sessions.count(); records != 0 {
+		t.Fatalf("missing Trash binding wrote %d records, want none", records)
+	}
+
+	quarantineAction := testRecoveryAction(t, domain.ActionQuarantinePath)
+	if _, err := ledger.Reserve(ctx, quarantineAction, planDigest, testRecoveryReservation(t, domain.ActionTrashPath)); !errors.Is(err, ErrRecoveryUnsupported) {
+		t.Fatalf("Reserve(QuarantinePath with binding) error = %v, want ErrRecoveryUnsupported", err)
+	}
+	if records := sessions.count(); records != 0 {
+		t.Fatalf("Quarantine binding rejection wrote %d records, want none", records)
+	}
+
+	reservation := testRecoveryReservation(t, domain.ActionTrashPath)
+	reserved, err := ledger.Reserve(ctx, trashAction, planDigest, reservation)
+	if err != nil {
+		t.Fatalf("Reserve(TrashPath with binding) error = %v", err)
+	}
+	if !reserved.TrashLayoutBinding().Equal(reservation.TrashLayoutBinding) {
+		t.Fatal("reserved recovery did not retain its Trash layout binding")
+	}
+
+	fresh := newTestRecoveryLedger(sessions)
+	reloaded, err := fresh.Reload(ctx, reserved)
+	if err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+	if !reloaded.TrashLayoutBinding().Equal(reservation.TrashLayoutBinding) {
+		t.Fatal("reloaded recovery changed its immutable Trash layout binding")
+	}
+}
+
+func TestRecoveryV2RejectsMissingOrChangedTrashLayoutBinding(t *testing.T) {
+	binding := testRecoveryBinding(t, domain.ActionTrashPath)
+	intent, err := newIntentFrame(binding)
+	if err != nil {
+		t.Fatalf("newIntentFrame() error = %v", err)
+	}
+
+	wire := toRecoveryFrameV2Wire(intent)
+	wire.TrashLayoutBinding = nil
+	if _, err := fromRecoveryFrameV2Wire(wire); !errors.Is(err, ErrRecoveryCorrupt) {
+		t.Fatalf("fromRecoveryFrameV2Wire(missing Trash binding) error = %v, want ErrRecoveryCorrupt", err)
+	}
+	wire = toRecoveryFrameV2Wire(intent)
+	wire.TrashLayoutBinding = []byte{1}
+	if _, err := fromRecoveryFrameV2Wire(wire); !errors.Is(err, ErrRecoveryCorrupt) {
+		t.Fatalf("fromRecoveryFrameV2Wire(malformed Trash binding) error = %v, want ErrRecoveryCorrupt", err)
+	}
+
+	dispatch, err := appendRecoveryTransition([]recoveryFrame{intent}, RecoveryTransition{Event: RecoveryEventMetadataDispatchRecorded})
+	if err != nil {
+		t.Fatalf("appendRecoveryTransition() error = %v", err)
+	}
+	changed := dispatch
+	changed.binding.trashLayoutBinding = testTrashLayoutBindingWithByte(t, 8)
+	if _, err := replayRecoveryFrames([]recoveryFrame{intent, changed}); !errors.Is(err, ErrRecoveryCorrupt) {
+		t.Fatalf("replayRecoveryFrames(changed Trash binding) error = %v, want ErrRecoveryCorrupt", err)
+	}
+
+	quarantine := testRecoveryBinding(t, domain.ActionQuarantinePath)
+	quarantineIntent, err := newIntentFrame(quarantine)
+	if err != nil {
+		t.Fatalf("new quarantine intent: %v", err)
+	}
+	quarantineWire := toRecoveryFrameV2Wire(quarantineIntent)
+	quarantineWire.TrashLayoutBinding = testTrashLayoutBinding(t).Bytes()
+	if _, err := fromRecoveryFrameV2Wire(quarantineWire); !errors.Is(err, ErrRecoveryCorrupt) {
+		t.Fatalf("fromRecoveryFrameV2Wire(Quarantine binding) error = %v, want ErrRecoveryCorrupt", err)
+	}
+}
+
+func TestRecoveryV1HistoriesRemainReadableButRejectAppendsAndMixedSchemas(t *testing.T) {
+	legacyBinding := testLegacyRecoveryBinding(t, domain.ActionTrashPath)
+	legacyIntent, err := newIntentFrameForSchema(legacyBinding, recoveryLedgerSchemaVersionV1)
+	if err != nil {
+		t.Fatalf("newIntentFrameForSchema(v1) error = %v", err)
+	}
+	legacyDispatch := testLegacyRecoveryTransitionFrame(t, legacyIntent, RecoveryTransition{Event: RecoveryEventMetadataDispatchRecorded})
+
+	replayed, err := replayRecoveryFrames([]recoveryFrame{legacyIntent, legacyDispatch})
+	if err != nil {
+		t.Fatalf("replayRecoveryFrames(v1) error = %v", err)
+	}
+	if !replayed.TrashLayoutBinding().IsZero() {
+		t.Fatal("legacy v1 recovery unexpectedly exposed a Trash layout binding")
+	}
+	if _, err := appendRecoveryTransition([]recoveryFrame{legacyIntent, legacyDispatch}, RecoveryTransition{Event: RecoveryEventMetadataVerified}); !errors.Is(err, ErrRecoveryUnsupported) {
+		t.Fatalf("appendRecoveryTransition(v1) error = %v, want ErrRecoveryUnsupported", err)
+	}
+	sessions := newTestRecoveryLedgerSessions()
+	for _, frame := range []recoveryFrame{legacyIntent, legacyDispatch} {
+		record := testRecoveryLedgerRecord(t, frame)
+		sessions.setRecord(record.id, record.contents)
+	}
+	ledger := newTestRecoveryLedger(sessions)
+	if _, err := ledger.Transition(context.Background(), replayed, RecoveryTransition{Event: RecoveryEventMetadataVerified}); !errors.Is(err, ErrRecoveryUnsupported) {
+		t.Fatalf("Transition(v1) error = %v, want ErrRecoveryUnsupported", err)
+	}
+	if records := sessions.count(); records != 2 {
+		t.Fatalf("Transition(v1) changed retained record count to %d, want 2", records)
+	}
+
+	mixed := legacyDispatch
+	mixed.schemaVersion = recoveryLedgerSchemaVersionV2
+	mixed.binding.trashLayoutBinding = testTrashLayoutBinding(t)
+	if _, err := replayRecoveryFrames([]recoveryFrame{legacyIntent, mixed}); !errors.Is(err, ErrRecoveryCorrupt) {
+		t.Fatalf("replayRecoveryFrames(mixed schemas) error = %v, want ErrRecoveryCorrupt", err)
+	}
+}
+
+const (
+	// These are frozen canonical v1 CBOR records, gzip-compressed only to keep
+	// this compatibility fixture readable. They are intentionally not produced
+	// through the current v1 encoder during the test.
+	legacyRecoveryV1IntentFixture   = "H4sIAAAAAAAAA+1WsW4UMRC9U4qARBGQEEQ0lAjplIKGggKJ0FNQkMqZs+d2feu1je3d5KDg4D8ouJMQRSJRIiT4mECBREED18J4N7ncLUeiQJEUuNm1Z8YznvfG47fCGROMDxCwE9CHTpwjlqiDkTrQhzn06EoUGEyGentdCd6Bfxw9bwrH8cV9DjzFdRkwT4wTUoNqSeBBGs2k8HVcCkWCrlMvZ/vSTGrRDw58yiyENBMUPJlHGVbLmVWgmZAJCR5dXz5mKOuQGy1k3GCXJ1KMMNNmS//AElSBq0tfeLFgUeRGYGO1PRRePmmurrREGFhMHCaFAodS/2Z59Waam4JS3nR0MXX4uJAOxeryzz5PQScoGIR5rWtX9m7Dezds9ZXUGeNxq3mNdkbhyp48ylgJLCVHlkPfuHmdc1MZBd+QtbUnJHNgJTpPOWw7yqhAjt4bN4WhdcwIOQYQEIAsvDW+gmOz2Me8S5hLnUx3+/zywqcP558++JjeuKd31buVZ5eXxKu7l259vfNw79uGLRt2FgbKgNhYXhv3atFOdzHLRINewkmfcWW2egFcgmFcK/SkQj/wxN6Z35GIFqMknkDBoF9RfC1SvM9NbomfOvhZ5i+sQZ2DBgqImW4feZiklHmBmuPzN5Vvf+iQRUGQIbqy0JWKfiezAZ1e0F6D9akJO2euos5qFTUyqK0z8Yc2chm6iaF5RI3t602c1ASCUmRyUDsTb4FnJGVEYO1rRk/Iq0UdKSTRD+fuuxMzanx6jJq5CP+z6+ywK3dYXfw1V7JILppDVxHpqDHnBKpg2OuRs9cpWEsJjQfvDghp6vglSBWVv6dkVR1+dJSWpJAMj3suFCYRNJIeozcN7O99/RlFan8m3tiOJQVQouhRNarLzCEIZrQaMKmrd5YbmCpblKEaFz/0BzRnhwW4NdenDtdL3LZkRLrUMMO0qPO6RBl0PTk52Wuo2cvL6rLg5K56YDFTkJ8cN38BTCP4FT8KAAA="
+	legacyRecoveryV1DispatchFixture = "H4sIAAAAAAAAA+1WO28UMRDOKcWBRBFAiJcQFBQI6ZSCBokUSIQ+BQWpnDl7bte3Xntje+9yUHDwPyi4CESRSCkBKVRUNPkPgQJBgYTgmhQw3k0uuSMkChRJwVbeeXjG830z9oqwxnjjPHiseXS+Fv4RW6j9woUUPQjwwIR0GXgeM4vcWIECvUlQL0wrwWvwj1/DmdxyfHKXA49xWnpMIwoiNaiKBO6l0UwKV+aoUERoa6U42dQmUoumt+BiRmnGiaCDkHvQYSFOMgWaThGR4v6V6j6fysIxtZBhg2UeSdHDRJu2/oEtUDmeH//E812EIjUCR6SVrnDywah0Ykz4ToaRxShXYFHq3zzPXY9Tk2vPRgOdjC3O59KiOF/92eQx6AgFAz9sdfHs+k14Y7tjTSV1wnjYatiiklC6siH3clYCW5IjS6Fp7LDNsYGOkh/RVbQjJFNgLbSOalixVFGBHJ0zdgDD6dWrOF/91tkYv3X5XV7TM68rn2176vnaylrz0vvJDT9EP+MKOObyTczrhLnU0WC3j09PfFg9/nDmbXztjl5WryYenRkXz26fuvFl6t7619msNeKXQUcZELPVycVGqVqq784yMUIvYaVLuDLthgcboV8sDRpSoes4Yu+OZU8Ej14UTqCg0ywoPhko3uQmzYif2rudzN+1H3UKGighZupN5L4fU+UFao6PXxax3XZAFhRe+hAqg7pUtOzvTOjwknYaMhcbv3TkOuqodtFIBXVmTVjQRjZB2zf0H1Bjm3Z9KzWBoBS5bPVOnwY3T0jLiMDalYzuU9QMdaCQRNcdmncHZtTi4TFqxyD8z66jw67UYjH4S64kgVz0D3VFpKOLOSVQBcNGg4K9iCHLqKDh4PUOIT0moQVSBePvMXkVh+/tZSUpJcPDnrsqowAaafexGyT297H+jCJdfyZMbMuiHKhQ9MDqlW1mEQQzWnWY1OHNZWzHFNWiCpW4uK7bojnbbsD20D21LW/hQkZOZEsXph80dVq2KIO6oyAHew2N3uWtYlhwClc8sJjJKU6Kc78AF6KlX0sKAAA="
+	legacyRecoveryV1IntentDigest    = "13bd24657107f279fb033b1fc4752d6e50b901ea72773ca5cfb0cf6a1dca2ffb"
+	legacyRecoveryV1DispatchDigest  = "510856b5257420bb7a72c7696c2edc333a4d347edfe38664c0f87f7165272ccb"
+)
+
+func TestRecoveryV1FrozenCBORAndDigestCompatibility(t *testing.T) {
+	fixtures := []struct {
+		name      string
+		encoded   string
+		digest    string
+		wantEvent RecoveryEvent
+	}{
+		{name: "intent", encoded: legacyRecoveryV1IntentFixture, digest: legacyRecoveryV1IntentDigest, wantEvent: RecoveryEventIntentReserved},
+		{name: "metadata dispatch", encoded: legacyRecoveryV1DispatchFixture, digest: legacyRecoveryV1DispatchDigest, wantEvent: RecoveryEventMetadataDispatchRecorded},
+	}
+
+	frames := make([]recoveryFrame, len(fixtures))
+	digests := make([][32]byte, len(fixtures))
+	for index, fixture := range fixtures {
+		raw := testFrozenRecoveryV1Frame(t, fixture.encoded)
+		if len(raw) == 0 || raw[0] != 0xb0 {
+			t.Fatalf("%s fixture map header = %x, want b0 for the frozen v1 field count", fixture.name, raw)
+		}
+
+		frame, err := decodeRecoveryFrame(raw)
+		if err != nil {
+			t.Fatalf("decode frozen %s frame: %v", fixture.name, err)
+		}
+		if frame.schemaVersion != recoveryLedgerSchemaVersionV1 || frame.event != fixture.wantEvent {
+			t.Fatalf("frozen %s frame = schema %d, event %q", fixture.name, frame.schemaVersion, frame.event)
+		}
+		if !frame.binding.trashLayoutBinding.IsZero() {
+			t.Fatalf("frozen %s v1 frame unexpectedly carries a Trash layout binding", fixture.name)
+		}
+
+		canonical, err := encodeRecoveryFrame(frame)
+		if err != nil {
+			t.Fatalf("re-encode frozen %s frame: %v", fixture.name, err)
+		}
+		if !bytes.Equal(raw, canonical) {
+			t.Fatalf("frozen %s frame changed during decode/re-encode", fixture.name)
+		}
+
+		digest, err := recoveryFrameDigest(frame)
+		if err != nil {
+			t.Fatalf("digest frozen %s frame: %v", fixture.name, err)
+		}
+		if got := fmt.Sprintf("%x", digest); got != fixture.digest {
+			t.Fatalf("frozen %s digest = %s, want %s", fixture.name, got, fixture.digest)
+		}
+		frames[index] = frame
+		digests[index] = digest
+	}
+
+	if frames[1].predecessor != digests[0] {
+		t.Fatal("frozen v1 dispatch frame does not bind the frozen intent digest")
+	}
+	replayed, err := replayRecoveryFrames(frames)
+	if err != nil {
+		t.Fatalf("replay frozen v1 predecessor chain: %v", err)
+	}
+	if replayed.schemaVersion != recoveryLedgerSchemaVersionV1 {
+		t.Fatalf("replayed frozen schema = %d, want v1", replayed.schemaVersion)
+	}
+}
+
+func testFrozenRecoveryV1Frame(t *testing.T, encoded string) []byte {
+	t.Helper()
+	compressed, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("decode frozen v1 fixture base64: %v", err)
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		t.Fatalf("open frozen v1 fixture gzip: %v", err)
+	}
+	raw, readErr := io.ReadAll(reader)
+	closeErr := reader.Close()
+	if readErr != nil {
+		t.Fatalf("read frozen v1 fixture gzip: %v", readErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("close frozen v1 fixture gzip: %v", closeErr)
+	}
+	return raw
+}
+
+func testLegacyRecoveryTransitionFrame(t *testing.T, previous recoveryFrame, transition RecoveryTransition) recoveryFrame {
+	t.Helper()
+	predecessor, err := recoveryFrameDigest(previous)
+	if err != nil {
+		t.Fatalf("recoveryFrameDigest(previous) error = %v", err)
+	}
+	frame := recoveryFrame{
+		schemaVersion: recoveryLedgerSchemaVersionV1,
+		binding:       previous.binding,
+		event:         transition.Event,
+		ordinal:       previous.ordinal + 1,
+		predecessor:   predecessor,
+		outcome:       transition.ReconciliationOutcome,
+		metadata:      transition.MetadataDisposition,
+	}
+	if err := validateRecoveryFrame(frame); err != nil {
+		t.Fatalf("validateRecoveryFrame(v1 transition) error = %v", err)
+	}
+	return frame
 }
 
 func TestRecoveryReducerEnforcesClosedTrashAndQuarantineGraphs(t *testing.T) {
@@ -245,11 +482,11 @@ func TestRecoveryFrameDecoderRejectsStrictOuterCBORViolations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode frame: %v", err)
 	}
-	if len(valid) == 0 || valid[0] != 0xb0 {
-		t.Fatalf("canonical frame map header = %x, want b0 for the fixed v1 field count", valid)
+	if len(valid) == 0 || valid[0] != 0xb1 {
+		t.Fatalf("canonical frame map header = %x, want b1 for the fixed v2 field count", valid)
 	}
 
-	unknownFields := testRecoveryFrameWireValues(toRecoveryFrameWire(intent))
+	unknownFields := testRecoveryFrameV2WireValues(toRecoveryFrameV2Wire(intent))
 	unknownFields["future_field"] = "retained-but-unsupported"
 	unknown, err := recoveryFrameEncMode.Marshal(unknownFields)
 	if err != nil {
@@ -268,7 +505,7 @@ func TestRecoveryFrameDecoderRejectsStrictOuterCBORViolations(t *testing.T) {
 	duplicate = append(duplicate, duplicateValue...)
 	indefinite := append([]byte{0xbf}, valid[1:]...)
 	indefinite = append(indefinite, 0xff)
-	nonMinimal := append([]byte{0xb8, 0x10}, valid[1:]...)
+	nonMinimal := append([]byte{0xb8, 0x11}, valid[1:]...)
 	tagged := append([]byte{0xc0}, valid...)
 
 	for name, encoded := range map[string][]byte{
@@ -284,6 +521,29 @@ func TestRecoveryFrameDecoderRejectsStrictOuterCBORViolations(t *testing.T) {
 			}
 		})
 	}
+}
+
+func testRecoveryFrameV2WireValues(wire recoveryFrameV2Wire) map[string]any {
+	values := testRecoveryFrameWireValues(recoveryFrameV1Wire{
+		SchemaVersion:         wire.SchemaVersion,
+		ActionBindingDigest:   wire.ActionBindingDigest,
+		ActionBindingPayload:  wire.ActionBindingPayload,
+		PlanDigest:            wire.PlanDigest,
+		Token:                 wire.Token,
+		Root:                  wire.Root,
+		Source:                wire.Source,
+		ActionID:              wire.ActionID,
+		ActionKind:            wire.ActionKind,
+		Destination:           wire.Destination,
+		Precondition:          wire.Precondition,
+		Event:                 wire.Event,
+		Ordinal:               wire.Ordinal,
+		PredecessorDigest:     wire.PredecessorDigest,
+		ReconciliationOutcome: wire.ReconciliationOutcome,
+		MetadataDisposition:   wire.MetadataDisposition,
+	})
+	values["trash_layout_binding"] = wire.TrashLayoutBinding
+	return values
 }
 
 func testRecoveryFrameWireValues(wire recoveryFrameWire) map[string]any {
@@ -408,14 +668,14 @@ func TestRecoveryLedgerPublicLifecycleReplaysRetainedFacts(t *testing.T) {
 	action := testRecoveryAction(t, domain.ActionTrashPath)
 	planDigest := testRecoveryPlanDigest(t)
 
-	reserved, err := ledger.Reserve(ctx, action, planDigest)
+	reserved, err := ledger.Reserve(ctx, action, planDigest, testRecoveryReservation(t, action.Kind))
 	if err != nil {
 		t.Fatalf("Reserve() error = %v", err)
 	}
 	if reserved.Event() != RecoveryEventIntentReserved || reserved.Ordinal() != 0 {
 		t.Fatalf("reserved recovery = (%q, %d), want intent reservation at ordinal zero", reserved.Event(), reserved.Ordinal())
 	}
-	if _, err := ledger.Reserve(ctx, action, planDigest); !errors.Is(err, ErrRecoveryConflict) {
+	if _, err := ledger.Reserve(ctx, action, planDigest, testRecoveryReservation(t, action.Kind)); !errors.Is(err, ErrRecoveryConflict) {
 		t.Fatalf("duplicate Reserve() error = %v, want ErrRecoveryConflict", err)
 	}
 
@@ -473,7 +733,7 @@ func TestRecoveryLedgerPublicLifecycleReplaysRetainedFacts(t *testing.T) {
 		t.Fatalf("FindOutstanding() after close = (_, %t, %v), want not found", ok, err)
 	}
 
-	replacement, err := fresh.Reserve(ctx, action, planDigest)
+	replacement, err := fresh.Reserve(ctx, action, planDigest, testRecoveryReservation(t, action.Kind))
 	if err != nil {
 		t.Fatalf("Reserve() after closed recovery error = %v", err)
 	}
@@ -488,10 +748,10 @@ func TestRecoveryLedgerPublicQueriesRemainBoundedAndExact(t *testing.T) {
 	first := testRecoveryAction(t, domain.ActionTrashPath)
 	second := testRecoveryActionAtPath(t, domain.ActionQuarantinePath, [][]byte{[]byte("cache"), []byte("other")})
 	planDigest := testRecoveryPlanDigest(t)
-	if _, err := ledger.Reserve(ctx, first, planDigest); err != nil {
+	if _, err := ledger.Reserve(ctx, first, planDigest, testRecoveryReservation(t, first.Kind)); err != nil {
 		t.Fatalf("first Reserve() error = %v", err)
 	}
-	if _, err := ledger.Reserve(ctx, second, planDigest); err != nil {
+	if _, err := ledger.Reserve(ctx, second, planDigest, testRecoveryReservation(t, second.Kind)); err != nil {
 		t.Fatalf("second Reserve() error = %v", err)
 	}
 
@@ -515,7 +775,7 @@ func TestRecoveryLedgerPublicPublicationInterruptionsReturnReloadableCandidates(
 	planDigest := testRecoveryPlanDigest(t)
 
 	sessions.interruptNextPublish()
-	reserved, err := ledger.Reserve(ctx, action, planDigest)
+	reserved, err := ledger.Reserve(ctx, action, planDigest, testRecoveryReservation(t, action.Kind))
 	if !errors.Is(err, linuxfs.ErrInterrupted) || reserved.Token() == "" {
 		t.Fatalf("interrupted Reserve() = (%#v, %v), want candidate plus ErrInterrupted", reserved, err)
 	}
@@ -570,7 +830,7 @@ func TestRecoveryLedgerPublicReadersFailClosedWithoutRepairingCorruption(t *test
 			return err
 		},
 		"reserve": func() error {
-			_, err := ledger.Reserve(ctx, testRecoveryAction(t, domain.ActionTrashPath), testRecoveryPlanDigest(t))
+			_, err := ledger.Reserve(ctx, testRecoveryAction(t, domain.ActionTrashPath), testRecoveryPlanDigest(t), testRecoveryReservation(t, domain.ActionTrashPath))
 			return err
 		},
 	} {
@@ -595,7 +855,7 @@ func TestRecoveryLedgerPublicGuardsAndProductionConstructor(t *testing.T) {
 	}
 	action := testRecoveryAction(t, domain.ActionTrashPath)
 	planDigest := testRecoveryPlanDigest(t)
-	if _, err := production.Reserve(context.Background(), action, planDigest); !errors.Is(err, linuxfs.ErrUnsupported) {
+	if _, err := production.Reserve(context.Background(), action, planDigest, testRecoveryReservation(t, action.Kind)); !errors.Is(err, linuxfs.ErrUnsupported) {
 		t.Fatalf("Reserve() through unqualified production lease error = %v, want linuxfs.ErrUnsupported", err)
 	}
 	if _, _, err := production.FindOutstanding(context.Background(), action.Target.Filesystem.Root, action.Target.Filesystem.Path); !errors.Is(err, linuxfs.ErrUnsupported) {
@@ -603,20 +863,20 @@ func TestRecoveryLedgerPublicGuardsAndProductionConstructor(t *testing.T) {
 	}
 
 	ledger := newTestRecoveryLedger(newTestRecoveryLedgerSessions())
-	if _, err := ledger.Reserve(nil, action, planDigest); !errors.Is(err, linuxfs.ErrInterrupted) {
+	if _, err := ledger.Reserve(nil, action, planDigest, testRecoveryReservation(t, action.Kind)); !errors.Is(err, linuxfs.ErrInterrupted) {
 		t.Fatalf("Reserve(nil context) error = %v, want ErrInterrupted", err)
 	}
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := ledger.Reserve(cancelled, action, planDigest); !errors.Is(err, linuxfs.ErrInterrupted) {
+	if _, err := ledger.Reserve(cancelled, action, planDigest, testRecoveryReservation(t, action.Kind)); !errors.Is(err, linuxfs.ErrInterrupted) {
 		t.Fatalf("Reserve(cancelled context) error = %v, want ErrInterrupted", err)
 	}
-	if _, err := ledger.Reserve(context.Background(), action, domain.PlanDigest{}); !errors.Is(err, ErrRecoveryUnsupported) {
+	if _, err := ledger.Reserve(context.Background(), action, domain.PlanDigest{}, testRecoveryReservation(t, action.Kind)); !errors.Is(err, ErrRecoveryUnsupported) {
 		t.Fatalf("Reserve(zero digest) error = %v, want ErrRecoveryUnsupported", err)
 	}
 	unsupportedAction := action.Clone()
 	unsupportedAction.Kind = domain.ActionDeleteRecreatablePath
-	if _, err := ledger.Reserve(context.Background(), unsupportedAction, planDigest); !errors.Is(err, ErrRecoveryUnsupported) {
+	if _, err := ledger.Reserve(context.Background(), unsupportedAction, planDigest, testRecoveryReservation(t, domain.ActionTrashPath)); !errors.Is(err, ErrRecoveryUnsupported) {
 		t.Fatalf("Reserve(unsupported action) error = %v, want ErrRecoveryUnsupported", err)
 	}
 	if _, err := ledger.Transition(context.Background(), Recovery{}, RecoveryTransition{Event: RecoveryEventMoveDispatchRecorded}); !errors.Is(err, ErrRecoveryUnsupported) {
@@ -635,7 +895,7 @@ func TestRecoveryLedgerPublicGuardsAndProductionConstructor(t *testing.T) {
 	}
 
 	var nilLedger *RecoveryLedger
-	if _, err := nilLedger.Reserve(context.Background(), action, planDigest); !errors.Is(err, ErrRecoveryUnsupported) {
+	if _, err := nilLedger.Reserve(context.Background(), action, planDigest, testRecoveryReservation(t, action.Kind)); !errors.Is(err, ErrRecoveryUnsupported) {
 		t.Fatalf("nil ledger Reserve() error = %v, want ErrRecoveryUnsupported", err)
 	}
 }
@@ -826,9 +1086,55 @@ func testRecoveryLedgerRecord(t *testing.T, frame recoveryFrame) recoveryLedgerR
 
 func testRecoveryBinding(t *testing.T, kind domain.ActionKind) recoveryBinding {
 	t.Helper()
-	binding, err := newRecoveryBinding(testRecoveryAction(t, kind), testRecoveryPlanDigest(t), "ldc-"+string(bytes.Repeat([]byte{'a'}, 64)))
+	binding, err := newRecoveryBinding(
+		testRecoveryAction(t, kind),
+		testRecoveryPlanDigest(t),
+		"ldc-"+string(bytes.Repeat([]byte{'a'}, 64)),
+		testRecoveryReservation(t, kind).TrashLayoutBinding,
+	)
 	if err != nil {
 		t.Fatalf("newRecoveryBinding() error = %v", err)
+	}
+	return binding
+}
+
+func testLegacyRecoveryBinding(t *testing.T, kind domain.ActionKind) recoveryBinding {
+	t.Helper()
+	binding, err := newRecoveryBindingForSchema(
+		testRecoveryAction(t, kind),
+		testRecoveryPlanDigest(t),
+		"ldc-"+string(bytes.Repeat([]byte{'a'}, 64)),
+		domain.TrashLayoutBinding{},
+		recoveryLedgerSchemaVersionV1,
+	)
+	if err != nil {
+		t.Fatalf("newRecoveryBindingForSchema(v1) error = %v", err)
+	}
+	return binding
+}
+
+func testRecoveryReservation(t *testing.T, kind domain.ActionKind) RecoveryReservation {
+	t.Helper()
+	if kind != domain.ActionTrashPath {
+		return RecoveryReservation{}
+	}
+	return RecoveryReservation{TrashLayoutBinding: testTrashLayoutBinding(t)}
+}
+
+func testRecoveryPortReservation(t *testing.T, kind domain.ActionKind) recoveryport.Reservation {
+	t.Helper()
+	return recoveryport.Reservation{TrashLayoutBinding: testRecoveryReservation(t, kind).TrashLayoutBinding}
+}
+
+func testTrashLayoutBinding(t *testing.T) domain.TrashLayoutBinding {
+	return testTrashLayoutBindingWithByte(t, 9)
+}
+
+func testTrashLayoutBindingWithByte(t *testing.T, value byte) domain.TrashLayoutBinding {
+	t.Helper()
+	binding, err := domain.NewTrashLayoutBinding(bytes.Repeat([]byte{value}, 32))
+	if err != nil {
+		t.Fatalf("NewTrashLayoutBinding() error = %v", err)
 	}
 	return binding
 }

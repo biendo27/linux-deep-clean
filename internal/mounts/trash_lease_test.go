@@ -159,6 +159,179 @@ func TestTopologyQualifiedTrashLeaseDuplicatesAllLiteralLayoutRoles(t *testing.T
 	}
 }
 
+func TestTrashLeaseMetadataReconciliationIdentityBindsCompleteQualifiedLayout(t *testing.T) {
+	root := openLayoutTestRoot(t)
+	rootID := root.RootID()
+	authority := testTopologyTrashAuthorityForIdentity(t, rootID, TrashPlacementTopUser, TrashMetadataMapping{
+		Basis:  TrashMetadataBasisTopRelative,
+		Prefix: mustTrashMetadataPath(t, [][]byte{[]byte("projects"), {0xff, 'x'}}),
+	})
+
+	first := openTopologyTrashLeaseForIdentity(t, root, authority)
+	firstIdentity, err := first.MetadataReconciliationIdentity()
+	if err != nil {
+		t.Fatalf("first MetadataReconciliationIdentity() error = %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("first topology-qualified Trash lease Close() error = %v", err)
+	}
+	second := openTopologyTrashLeaseForIdentity(t, root, authority)
+	defer second.Close()
+	secondIdentity, err := second.MetadataReconciliationIdentity()
+	if err != nil {
+		t.Fatalf("second MetadataReconciliationIdentity() error = %v", err)
+	}
+	if firstIdentity.IsZero() {
+		t.Fatal("MetadataReconciliationIdentity() returned a zero binding")
+	}
+	if !firstIdentity.Equal(secondIdentity) {
+		t.Fatalf("equivalent reopened Trash layouts had different bindings: %s != %s", firstIdentity, secondIdentity)
+	}
+
+	for _, test := range []struct {
+		name      string
+		mutate    func(*TrashAuthority)
+		wantEqual bool
+	}{
+		{
+			name: "raw metadata prefix",
+			mutate: func(authority *TrashAuthority) {
+				authority.Metadata.Prefix = mustTrashMetadataPath(t, [][]byte{[]byte("projects"), {0xfe, 'x'}})
+			},
+		},
+		{
+			name: "metadata component boundary",
+			mutate: func(authority *TrashAuthority) {
+				authority.Metadata.Prefix = mustTrashMetadataPath(t, [][]byte{[]byte("projects"), {0xff}, []byte("x")})
+			},
+		},
+		{
+			name: "topology anchor evidence",
+			mutate: func(authority *TrashAuthority) {
+				authority.Topology.Anchor.Inode += 10
+			},
+		},
+		{
+			name: "expected info evidence",
+			mutate: func(authority *TrashAuthority) {
+				authority.Expected.Info.Inode++
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := authority
+			test.mutate(&changed)
+			lease := openTopologyTrashLeaseForIdentity(t, root, changed)
+			defer lease.Close()
+
+			identity, err := lease.MetadataReconciliationIdentity()
+			if err != nil {
+				t.Fatalf("MetadataReconciliationIdentity() error = %v", err)
+			}
+			if firstIdentity.Equal(identity) != test.wantEqual {
+				t.Fatalf("layout binding equality = %t, want %t", firstIdentity.Equal(identity), test.wantEqual)
+			}
+		})
+	}
+
+	rootWithDifferentMountEvidence := openLayoutTestRoot(t)
+	defer rootWithDifferentMountEvidence.Close()
+	rootWithDifferentMountEvidence.expected.Mount.Source = "/dev/different-trash-layout"
+	mountChanged := authority
+	setTrashAuthorityMountEvidence(&mountChanged, rootWithDifferentMountEvidence.expected.Mount)
+	mountChangedLease := openTopologyTrashLeaseForIdentity(t, rootWithDifferentMountEvidence, mountChanged)
+	defer mountChangedLease.Close()
+	mountChangedIdentity, err := mountChangedLease.MetadataReconciliationIdentity()
+	if err != nil {
+		t.Fatalf("mount-evidence MetadataReconciliationIdentity() error = %v", err)
+	}
+	if firstIdentity.Equal(mountChangedIdentity) {
+		t.Fatal("different full mount evidence produced the same layout binding")
+	}
+
+	sharedAuthority := testTopologyTrashAuthorityForIdentity(t, rootID, TrashPlacementTopShared, TrashMetadataMapping{Basis: TrashMetadataBasisTopRelative})
+	shared := openTopologyTrashLeaseForIdentity(t, root, sharedAuthority)
+	defer shared.Close()
+	sharedIdentity, err := shared.MetadataReconciliationIdentity()
+	if err != nil {
+		t.Fatalf("shared MetadataReconciliationIdentity() error = %v", err)
+	}
+	sharedChangedAuthority := sharedAuthority
+	sharedChangedAuthority.Expected.SharedTop.Inode++
+	sharedChanged := openTopologyTrashLeaseForIdentity(t, root, sharedChangedAuthority)
+	defer sharedChanged.Close()
+	sharedChangedIdentity, err := sharedChanged.MetadataReconciliationIdentity()
+	if err != nil {
+		t.Fatalf("changed shared MetadataReconciliationIdentity() error = %v", err)
+	}
+	if sharedIdentity.Equal(sharedChangedIdentity) {
+		t.Fatal("different shared Trash role evidence produced the same layout binding")
+	}
+}
+
+func TestTrashLeaseMetadataReconciliationIdentityFailsClosed(t *testing.T) {
+	var nilLease *TrashLease
+	identity, err := nilLease.MetadataReconciliationIdentity()
+	if !errors.Is(err, ErrLeaseClosed) {
+		t.Fatalf("nil MetadataReconciliationIdentity() error = %v, want ErrLeaseClosed", err)
+	}
+	if !identity.IsZero() {
+		t.Fatal("nil MetadataReconciliationIdentity() returned a nonzero binding")
+	}
+
+	root := openLayoutTestRoot(t)
+	rootID := root.RootID()
+	legacyAuthority := testTrashAuthority(t, rootID, TrashPlacementTopUser, 1000, TrashMetadataMapping{Basis: TrashMetadataBasisTopRelative})
+	legacy, err := openTrustedTrashWith(
+		StaticTrashRegistry{rootID: legacyAuthority},
+		root,
+		trashInspectionSequence(testInspection(), legacyAuthority.Expected.TrashRoot.inspection(), legacyAuthority.Expected.Files.inspection(), legacyAuthority.Expected.Info.inspection()),
+		func() error { return nil },
+	)
+	if err != nil {
+		t.Fatalf("open legacy trusted Trash lease: %v", err)
+	}
+	defer legacy.Close()
+	identity, err = legacy.MetadataReconciliationIdentity()
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("legacy MetadataReconciliationIdentity() error = %v, want ErrUnsupported", err)
+	}
+	if !identity.IsZero() {
+		t.Fatal("legacy MetadataReconciliationIdentity() returned a nonzero binding")
+	}
+
+	qualified := openTopologyTrashLeaseForIdentity(t, root, testTopologyTrashAuthorityForIdentity(t, rootID, TrashPlacementTopUser, TrashMetadataMapping{Basis: TrashMetadataBasisTopRelative}))
+	if err := qualified.Close(); err != nil {
+		t.Fatalf("qualified Trash lease Close() error = %v", err)
+	}
+	identity, err = qualified.MetadataReconciliationIdentity()
+	if !errors.Is(err, ErrLeaseClosed) {
+		t.Fatalf("closed MetadataReconciliationIdentity() error = %v, want ErrLeaseClosed", err)
+	}
+	if !identity.IsZero() {
+		t.Fatal("closed MetadataReconciliationIdentity() returned a nonzero binding")
+	}
+}
+
+func TestTrashLeaseMetadataReconciliationIdentityHasCanonicalKnownVector(t *testing.T) {
+	root := openLayoutTestRoot(t)
+	authority := testTopologyTrashAuthorityForIdentity(t, root.RootID(), TrashPlacementTopUser, TrashMetadataMapping{
+		Basis:  TrashMetadataBasisTopRelative,
+		Prefix: mustTrashMetadataPath(t, [][]byte{[]byte("projects"), {0xff, 'x'}}),
+	})
+	lease := openTopologyTrashLeaseForIdentity(t, root, authority)
+	defer lease.Close()
+
+	identity, err := lease.MetadataReconciliationIdentity()
+	if err != nil {
+		t.Fatalf("MetadataReconciliationIdentity() error = %v", err)
+	}
+	const want = "fadc32237533dd0a23614f5e12134609ea6355c25479b8e6dec0032542190e5f"
+	if got := identity.String(); got != want {
+		t.Fatalf("MetadataReconciliationIdentity() = %s, want frozen canonical vector %s", got, want)
+	}
+}
+
 func TestTopologyQualifiedTrashLeaseClosesRejectedDescriptorHandoffs(t *testing.T) {
 	root := openLayoutTestRoot(t)
 	rootID := root.RootID()
@@ -382,6 +555,11 @@ func TestTrashAuthorityFailsClosedForPlacementBasisOwnershipAndLayout(t *testing
 	topUser.Expected.TrashRoot.Mode = 0o755
 	if err := topUser.validate(rootID); !errors.Is(err, ErrInvalidAuthority) {
 		t.Fatalf("TopUser non-0700 validation error = %v, want ErrInvalidAuthority", err)
+	}
+	topUser = testTrashAuthority(t, rootID, TrashPlacementTopUser, 1000, TrashMetadataMapping{Basis: TrashMetadataBasisTopRelative})
+	topUser.Expected.SharedTop = valid.Expected.SharedTop
+	if err := topUser.validate(rootID); !errors.Is(err, ErrInvalidAuthority) {
+		t.Fatalf("TopUser unselected shared-top evidence validation error = %v, want ErrInvalidAuthority", err)
 	}
 
 	home := testTrashAuthority(t, rootID, TrashPlacementHome, 1000, TrashMetadataMapping{Basis: TrashMetadataBasisHomeAbsolute})
@@ -909,6 +1087,79 @@ func testTrashAuthority(t *testing.T, rootID domain.TrustedRootID, placement Tra
 		},
 		Expected: testTrashLayoutExpectation(placement, ownerUID),
 	}
+}
+
+func testTopologyTrashAuthorityForIdentity(t *testing.T, rootID domain.TrustedRootID, placement TrashPlacement, metadata TrashMetadataMapping) TrashAuthority {
+	t.Helper()
+	authority := testTrashAuthority(t, rootID, placement, 1000, metadata)
+	authority.Topology = TrashTopology{
+		AnchorKind: topologyAnchorKindForPlacement(placement),
+		Anchor:     testTrashLayoutEvidence(200, 1000, 0o700),
+	}
+	directories := trashTestDirectories(t, placement == TrashPlacementTopShared)
+	authority.Open = func() (TrashDescriptors, error) {
+		return openTrashTopologyTestDescriptors(directories, placement == TrashPlacementTopShared)
+	}
+	return authority
+}
+
+func openTopologyTrashLeaseForIdentity(t *testing.T, root *RootLease, authority TrashAuthority) *TrashLease {
+	t.Helper()
+	inspections := []MountInspection{
+		rootInspectionForIdentity(root),
+		authority.Topology.Anchor.inspection(),
+		authority.Expected.TrashRoot.inspection(),
+		authority.Expected.Files.inspection(),
+		authority.Expected.Info.inspection(),
+	}
+	if authority.Placement == TrashPlacementTopShared {
+		inspections = append(inspections, authority.Expected.SharedTop.inspection())
+	}
+	lease, err := openTrustedTrashWith(
+		StaticTrashRegistry{root.RootID(): authority},
+		root,
+		trashInspectionSequence(inspections...),
+		func() error { return nil },
+	)
+	if err != nil {
+		t.Fatalf("open topology-qualified Trash lease: %v", err)
+	}
+	return lease
+}
+
+func rootInspectionForIdentity(root *RootLease) MountInspection {
+	inspection := testInspection()
+	expectation := root.expected
+	inspection.Namespace = expectation.Namespace
+	inspection.Device = expectation.Device
+	inspection.Inode = expectation.Inode
+	inspection.UID = expectation.UID
+	inspection.GID = expectation.GID
+	inspection.Mode = expectation.Mode
+	inspection.Mount = expectation.Mount
+	inspection.Filesystem.RootDevice = expectation.Device
+	inspection.Filesystem.MountDevice = expectation.Mount.Device
+	inspection.Filesystem.Filesystem = expectation.Mount.Filesystem
+	inspection.Filesystem.MountFilesystem = expectation.Mount.Filesystem
+	inspection.Filesystem.MountRoot = expectation.Mount.Root
+	return inspection
+}
+
+func setTrashAuthorityMountEvidence(authority *TrashAuthority, mount MountRecord) {
+	authority.Topology.Anchor.Mount = mount
+	authority.Expected.TrashRoot.Mount = mount
+	authority.Expected.Files.Mount = mount
+	authority.Expected.Info.Mount = mount
+	if authority.Expected.HasSharedTop {
+		authority.Expected.SharedTop.Mount = mount
+	}
+}
+
+func topologyAnchorKindForPlacement(placement TrashPlacement) TrashAnchorKind {
+	if placement == TrashPlacementHome {
+		return TrashAnchorHomeData
+	}
+	return TrashAnchorFilesystemTop
 }
 
 func testTrashLayoutExpectation(placement TrashPlacement, ownerUID uint32) TrashLayoutExpectation {

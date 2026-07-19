@@ -125,8 +125,8 @@ trusted root identity and idempotent close. It exposes neither a pathname nor
 a descriptor and cannot retain, restore, scan, remove, or otherwise mutate
 content.
 
-There is not yet a high-level Trash restoration/reconciliation API, a
-descriptor-rooted orphan probe, a quarantine content operation, or
+There is no high-level Trash restoration or generic reconciliation API, no
+descriptor-rooted orphan probe, no quarantine content operation, or
 `domain.RecoveryHandle`/`domain.ActionResult` composition. A durable ledger
 record alone never authorizes or performs any content operation.
 
@@ -158,12 +158,22 @@ lease controls restoration.
 
 Unknown rename or fsync state requires a durable private intent/state record
 and an indeterminate reconciliation probe. Phase 4A implements the private
-record and closed fact graph; Phase 3B must add the descriptor-rooted probe
-that records those facts. A generic scan of a user's Trash cannot establish
-LDC ownership. Therefore malformed, file-only, collision, and unknown orphan
-entries are retained and reported by default. Metadata-only entries may be
-cleaned only when a durable LDC-owned intent proves ownership and the
-corresponding cleanup is verified.
+record and closed fact graph. The narrow
+`trash.ReconcileIndeterminateTrashMetadata` path first reloads and validates a
+current v2 durable `EventMetadataIndeterminate` ticket before requiring an
+exact match between its opaque immutable layout/mapping binding and the
+supplied topology-qualified Trash lease. Only then does it map metadata,
+reload again before selecting descriptors, and read-only probe the exact
+ticket-owned `<token>.trashinfo`. Readable legacy v1 tickets lack that binding
+and remain unsupported and outstanding. It may close a v2 ticket only as
+`EventReconciliationResolved` with
+`OutcomeNotApplied` and `MetadataAbsent` or `MetadataRetained`; malformed,
+mismatched, or uncertain metadata leaves the ticket outstanding. It has no
+scan, cleanup, deletion, restoration, rename, or content-operation authority.
+A generic scan of a user's Trash cannot establish LDC ownership. Therefore
+malformed, file-only, collision, and unknown orphan entries are retained and
+reported by default. Metadata-only entries may be cleaned only when a durable
+LDC-owned intent proves ownership and the corresponding cleanup is verified.
 
 Quarantine follows the same no-replace move/verify/sync rules but uses a
 separate authority-attested, private same-mount store. Retained content is

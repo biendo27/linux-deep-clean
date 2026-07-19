@@ -33,11 +33,13 @@ func NewRecoveryLedgerPort(ledger *RecoveryLedger) (*RecoveryLedgerPort, error) 
 
 // Reserve persists one source-bound intent through the concrete ledger before
 // any content operation. A returned ticket remains opaque to the caller.
-func (port *RecoveryLedgerPort) Reserve(ctx context.Context, action domain.Action, planDigest domain.PlanDigest) (recoveryport.Ticket, error) {
+func (port *RecoveryLedgerPort) Reserve(ctx context.Context, action domain.Action, planDigest domain.PlanDigest, reservation recoveryport.Reservation) (recoveryport.Ticket, error) {
 	if err := port.validate(); err != nil {
 		return nil, err
 	}
-	recovery, err := port.ledger.Reserve(ctx, action, planDigest)
+	recovery, err := port.ledger.Reserve(ctx, action, planDigest, RecoveryReservation{
+		TrashLayoutBinding: reservation.TrashLayoutBinding,
+	})
 	return port.ticketResult(recovery, err)
 }
 
@@ -254,6 +256,13 @@ func (ticket *recoveryTicket) MetadataDisposition() recoveryport.MetadataDisposi
 		return ""
 	}
 	return ticket.metadata
+}
+
+func (ticket *recoveryTicket) TrashLayoutBinding() domain.TrashLayoutBinding {
+	if ticket == nil {
+		return domain.TrashLayoutBinding{}
+	}
+	return ticket.recovery.TrashLayoutBinding()
 }
 
 func (ticket *recoveryTicket) Closed() bool {

@@ -27,7 +27,8 @@ func TestContentRecoveryLedgerBridgesOpaqueRecoveryFacts(t *testing.T) {
 	}
 
 	action := testRecoveryAction(t, domain.ActionTrashPath)
-	reserved, err := content.Reserve(ctx, action, testRecoveryPlanDigest(t))
+	reservation := testRecoveryPortReservation(t, action.Kind)
+	reserved, err := content.Reserve(ctx, action, testRecoveryPlanDigest(t), reservation)
 	if err != nil {
 		t.Fatalf("Reserve() error = %v", err)
 	}
@@ -45,6 +46,9 @@ func TestContentRecoveryLedgerBridgesOpaqueRecoveryFacts(t *testing.T) {
 	}
 	if reserved.ActionID() != action.ID || reserved.ActionKind() != action.Kind {
 		t.Fatal("reserved record changed immutable action facts")
+	}
+	if !reserved.TrashLayoutBinding().Equal(reservation.TrashLayoutBinding) {
+		t.Fatal("reserved ticket did not expose its immutable Trash layout binding")
 	}
 
 	precondition := reserved.Precondition()
@@ -234,7 +238,7 @@ func TestContentRecoveryLedgerMapsEveryKnownPortEnum(t *testing.T) {
 				t.Fatalf("NewRecoveryLedgerPort() error = %v", err)
 			}
 
-			ticket, err := content.Reserve(ctx, testRecoveryAction(t, test.actionKind), testRecoveryPlanDigest(t))
+			ticket, err := content.Reserve(ctx, testRecoveryAction(t, test.actionKind), testRecoveryPlanDigest(t), testRecoveryPortReservation(t, test.actionKind))
 			if err != nil {
 				t.Fatalf("Reserve() error = %v", err)
 			}
@@ -289,7 +293,7 @@ func TestContentRecoveryLedgerReloadsBoundedTicketsAndRejectsOtherPorts(t *testi
 	}
 
 	action := testRecoveryAction(t, domain.ActionQuarantinePath)
-	reserved, err := content.Reserve(ctx, action, testRecoveryPlanDigest(t))
+	reserved, err := content.Reserve(ctx, action, testRecoveryPlanDigest(t), testRecoveryPortReservation(t, action.Kind))
 	if err != nil {
 		t.Fatalf("Reserve() error = %v", err)
 	}
@@ -335,7 +339,7 @@ func TestContentRecoveryLedgerPreservesInterruptedTicketsForReload(t *testing.T)
 	}
 
 	sessions.interruptNextPublish()
-	reserved, err := content.Reserve(ctx, testRecoveryAction(t, domain.ActionQuarantinePath), testRecoveryPlanDigest(t))
+	reserved, err := content.Reserve(ctx, testRecoveryAction(t, domain.ActionQuarantinePath), testRecoveryPlanDigest(t), testRecoveryPortReservation(t, domain.ActionQuarantinePath))
 	if !errors.Is(err, linuxfs.ErrInterrupted) || reserved == nil || reserved.Token() == "" {
 		t.Fatalf("interrupted Reserve() = (%#v, %v), want reloadable ticket + ErrInterrupted", reserved, err)
 	}
@@ -397,7 +401,7 @@ func TestContentRecoveryLedgerRejectsInvalidPortEnumsBeforeMutation(t *testing.T
 			if err != nil {
 				t.Fatalf("NewRecoveryLedgerPort() error = %v", err)
 			}
-			reserved, err := content.Reserve(ctx, testRecoveryAction(t, domain.ActionQuarantinePath), testRecoveryPlanDigest(t))
+			reserved, err := content.Reserve(ctx, testRecoveryAction(t, domain.ActionQuarantinePath), testRecoveryPlanDigest(t), testRecoveryPortReservation(t, domain.ActionQuarantinePath))
 			if err != nil {
 				t.Fatalf("Reserve() error = %v", err)
 			}
@@ -475,6 +479,9 @@ func (foreignRecoveryRecord) Outcome() recoveryport.Outcome {
 }
 func (foreignRecoveryRecord) MetadataDisposition() recoveryport.MetadataDisposition {
 	return ""
+}
+func (foreignRecoveryRecord) TrashLayoutBinding() domain.TrashLayoutBinding {
+	return domain.TrashLayoutBinding{}
 }
 func (foreignRecoveryRecord) Closed() bool { return false }
 

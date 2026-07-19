@@ -56,6 +56,17 @@ const (
 	MetadataRetained MetadataDisposition = "retained"
 )
 
+// Reservation carries immutable, data-only facts that must be durably bound
+// before a content operation begins. It never contains a layout lease,
+// descriptor, path, or operation authority.
+//
+// TrashPath reservations require a valid nonzero TrashLayoutBinding;
+// QuarantinePath reservations require its zero value. The ledger validates
+// that policy against the action kind before it records an intent.
+type Reservation struct {
+	TrashLayoutBinding domain.TrashLayoutBinding
+}
+
 // Transition requests one durable closed-graph fact. It contains no token,
 // cleanup instruction, or content-side destination name.
 type Transition struct {
@@ -78,6 +89,7 @@ type Ticket interface {
 	Event() Event
 	Outcome() Outcome
 	MetadataDisposition() MetadataDisposition
+	TrashLayoutBinding() domain.TrashLayoutBinding
 	Closed() bool
 }
 
@@ -85,7 +97,7 @@ type Ticket interface {
 // implementation owns reservation generation, replay, and transition
 // validation; callers cannot choose durable storage or construct a ticket.
 type Ledger interface {
-	Reserve(context.Context, domain.Action, domain.PlanDigest) (Ticket, error)
+	Reserve(context.Context, domain.Action, domain.PlanDigest, Reservation) (Ticket, error)
 	Transition(context.Context, Ticket, Transition) (Ticket, error)
 	FindOutstanding(context.Context, domain.TrustedRootID, pathbytes.BytePath) (Ticket, bool, error)
 	ListOutstanding(context.Context, int) ([]Ticket, error)

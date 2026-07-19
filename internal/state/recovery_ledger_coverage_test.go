@@ -67,10 +67,10 @@ func TestRecoveryLedgerCoverageActionAndBindingValidation(t *testing.T) {
 	if err := validateRecoveryAction(nonRecoverable); !errors.Is(err, ErrRecoveryUnsupported) {
 		t.Fatalf("validateRecoveryAction(non-recoverable) error = %v, want ErrRecoveryUnsupported", err)
 	}
-	if _, err := newRecoveryBinding(validAction, domain.PlanDigest{}, "ldc-"+string(bytes.Repeat([]byte{'c'}, 64))); !errors.Is(err, ErrRecoveryUnsupported) {
+	if _, err := newRecoveryBinding(validAction, domain.PlanDigest{}, "ldc-"+string(bytes.Repeat([]byte{'c'}, 64)), testRecoveryReservation(t, validAction.Kind).TrashLayoutBinding); !errors.Is(err, ErrRecoveryUnsupported) {
 		t.Fatalf("newRecoveryBinding(zero digest) error = %v, want ErrRecoveryUnsupported", err)
 	}
-	if _, err := newRecoveryBinding(validAction, planDigest, "invalid-token"); !errors.Is(err, ErrRecoveryUnsupported) {
+	if _, err := newRecoveryBinding(validAction, planDigest, "invalid-token", testRecoveryReservation(t, validAction.Kind).TrashLayoutBinding); !errors.Is(err, ErrRecoveryUnsupported) {
 		t.Fatalf("newRecoveryBinding(invalid token) error = %v, want ErrRecoveryUnsupported", err)
 	}
 
@@ -569,7 +569,7 @@ func TestRecoveryLedgerCoverageOpaqueSessionFailures(t *testing.T) {
 	}
 
 	ledger := &RecoveryLedger{sessions: coverageRecoveryLedgerSessions{writeErr: sentinel}}
-	if _, err := ledger.Reserve(context.Background(), testRecoveryAction(t, domain.ActionTrashPath), testRecoveryPlanDigest(t)); !errors.Is(err, sentinel) {
+	if _, err := ledger.Reserve(context.Background(), testRecoveryAction(t, domain.ActionTrashPath), testRecoveryPlanDigest(t), testRecoveryReservation(t, domain.ActionTrashPath)); !errors.Is(err, sentinel) {
 		t.Fatalf("Reserve(write session error) = %v, want sentinel", err)
 	}
 	if _, err := ledger.Transition(context.Background(), Recovery{binding: intent.binding}, RecoveryTransition{Event: RecoveryEventMetadataDispatchRecorded}); !errors.Is(err, sentinel) {

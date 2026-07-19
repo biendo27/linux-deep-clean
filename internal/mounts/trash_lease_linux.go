@@ -3,6 +3,7 @@
 package mounts
 
 import (
+	"encoding/binary"
 	"fmt"
 	"sync"
 
@@ -467,8 +468,8 @@ func (expectation TrashLayoutExpectation) validate(placement TrashPlacement, own
 	}
 
 	if placement != TrashPlacementTopShared {
-		if expectation.HasSharedTop {
-			return fmt.Errorf("%w: only shared top-directory Trash may include a shared parent", ErrInvalidAuthority)
+		if expectation.HasSharedTop || !isZeroTrashLayoutExpectation(expectation.SharedTop) {
+			return fmt.Errorf("%w: only shared top-directory Trash may include shared parent evidence", ErrInvalidAuthority)
 		}
 		return nil
 	}
@@ -643,6 +644,152 @@ func (lease *TrashLease) OwnerUID() uint32 {
 		return 0
 	}
 	return lease.ownerUID
+}
+
+// MetadataReconciliationIdentity returns immutable correlation evidence for
+// one complete topology-qualified Trash layout. It contains no path or
+// descriptor and grants no authority to reopen, mutate, or probe the layout.
+// Legacy pre-selector leases fail closed because they do not bind a literal
+// Freedesktop topology suitable for metadata reconciliation.
+func (lease *TrashLease) MetadataReconciliationIdentity() (domain.TrashLayoutBinding, error) {
+	if lease == nil {
+		return domain.TrashLayoutBinding{}, ErrLeaseClosed
+	}
+
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if lease.closed {
+		return domain.TrashLayoutBinding{}, ErrLeaseClosed
+	}
+	if !lease.topology.configured() {
+		return domain.TrashLayoutBinding{}, fmt.Errorf("%w: metadata reconciliation requires a topology-qualified Trash lease", ErrUnsupported)
+	}
+	if err := lease.validateMetadataReconciliationIdentityLocked(); err != nil {
+		return domain.TrashLayoutBinding{}, err
+	}
+	return domain.ComputeTrashLayoutBinding(encodeTrashLayoutBinding(lease)), nil
+}
+
+func (lease *TrashLease) validateMetadataReconciliationIdentityLocked() error {
+	if lease.root == nil {
+		return ErrLeaseClosed
+	}
+	if lease.root.RootID() != lease.rootID {
+		return fmt.Errorf("%w: trusted Trash root identity changed", ErrDrifted)
+	}
+	if err := lease.rootID.Validate(); err != nil {
+		return fmt.Errorf("%w: Trash layout binding root: %v", ErrInvalidAuthority, err)
+	}
+	if err := lease.placement.validate(); err != nil {
+		return err
+	}
+	if err := lease.metadata.validate(lease.placement); err != nil {
+		return err
+	}
+	if err := lease.expected.validate(lease.placement, lease.ownerUID); err != nil {
+		return err
+	}
+	if err := lease.topology.validate(lease.placement); err != nil {
+		return err
+	}
+	if err := validateTrashTopologyBinding(lease.topology, lease.expected); err != nil {
+		return err
+	}
+	if err := lease.descriptors.validateTopology(lease.placement); err != nil {
+		return err
+	}
+	return nil
+}
+
+// encodeTrashLayoutBinding is an explicit, tagged, length-prefixed encoding
+// of static Trash authority facts. Fixed field order and length-delimited raw
+// values make it unambiguous; only its digest leaves this package.
+func encodeTrashLayoutBinding(lease *TrashLease) []byte {
+	encoder := trashLayoutBindingEncoder{}
+	encoder.text("version", "1")
+	encoder.text("root", lease.rootID.String())
+	encoder.text("placement", string(lease.placement))
+	encoder.uint32("owner_uid", lease.ownerUID)
+	encoder.text("metadata.basis", string(lease.metadata.Basis))
+	encoder.bytePath("metadata.prefix", lease.metadata.Prefix)
+	encoder.text("topology.anchor_kind", string(lease.topology.AnchorKind))
+	encoder.expectation("topology.anchor", lease.topology.Anchor)
+	encoder.expectation("roles.trash_root", lease.expected.TrashRoot)
+	encoder.expectation("roles.files", lease.expected.Files)
+	encoder.expectation("roles.info", lease.expected.Info)
+	encoder.boolean("roles.has_shared_top", lease.expected.HasSharedTop)
+	if lease.expected.HasSharedTop {
+		encoder.expectation("roles.shared_top", lease.expected.SharedTop)
+	}
+	return encoder.bytes
+}
+
+type trashLayoutBindingEncoder struct {
+	bytes []byte
+}
+
+func (encoder *trashLayoutBindingEncoder) field(name string, value []byte) {
+	encoder.uint64Raw(uint64(len(name)))
+	encoder.bytes = append(encoder.bytes, name...)
+	encoder.uint64Raw(uint64(len(value)))
+	encoder.bytes = append(encoder.bytes, value...)
+}
+
+func (encoder *trashLayoutBindingEncoder) text(name, value string) {
+	encoder.field(name, []byte(value))
+}
+
+func (encoder *trashLayoutBindingEncoder) uint32(name string, value uint32) {
+	var encoded [4]byte
+	binary.BigEndian.PutUint32(encoded[:], value)
+	encoder.field(name, encoded[:])
+}
+
+func (encoder *trashLayoutBindingEncoder) uint64(name string, value uint64) {
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], value)
+	encoder.field(name, encoded[:])
+}
+
+func (encoder *trashLayoutBindingEncoder) boolean(name string, value bool) {
+	encoded := byte(0)
+	if value {
+		encoded = 1
+	}
+	encoder.field(name, []byte{encoded})
+}
+
+func (encoder *trashLayoutBindingEncoder) bytePath(name string, value pathbytes.BytePath) {
+	components := value.Components()
+	encoder.uint64(name+".component_count", uint64(len(components)))
+	for _, component := range components {
+		encoder.field(name+".component", component)
+	}
+}
+
+func (encoder *trashLayoutBindingEncoder) expectation(name string, value LayoutExpectation) {
+	encoder.uint64(name+".namespace.device", value.Namespace.Device)
+	encoder.uint64(name+".namespace.inode", value.Namespace.Inode)
+	encoder.uint32(name+".device.major", value.Device.Major)
+	encoder.uint32(name+".device.minor", value.Device.Minor)
+	encoder.uint64(name+".inode", value.Inode)
+	encoder.uint32(name+".uid", value.UID)
+	encoder.uint32(name+".gid", value.GID)
+	encoder.uint32(name+".mode", value.Mode)
+	encoder.uint64(name+".mount.id", value.Mount.ID)
+	encoder.uint64(name+".mount.parent_id", value.Mount.ParentID)
+	encoder.uint32(name+".mount.device.major", value.Mount.Device.Major)
+	encoder.uint32(name+".mount.device.minor", value.Mount.Device.Minor)
+	encoder.text(name+".mount.root", value.Mount.Root)
+	encoder.text(name+".mount.point", value.Mount.MountPoint)
+	encoder.text(name+".mount.filesystem", string(value.Mount.Filesystem))
+	encoder.text(name+".mount.source", value.Mount.Source)
+}
+
+func (encoder *trashLayoutBindingEncoder) uint64Raw(value uint64) {
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], value)
+	encoder.bytes = append(encoder.bytes, encoded[:]...)
 }
 
 // MetadataPathFor maps a trusted-root-relative raw-byte path to metadata

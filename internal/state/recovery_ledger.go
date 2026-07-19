@@ -21,17 +21,24 @@ import (
 )
 
 const (
-	recoveryLedgerSchemaVersion   uint16 = 1
-	maximumRecoveryFrameBytes            = 64 << 10
-	maximumRecoveryLedgerRecords         = 128
-	maximumRecoveryPathComponents        = 128
-	maximumRecoveryPathBytes             = 16 << 10
+	recoveryLedgerSchemaVersionV1 uint16 = 1
+	recoveryLedgerSchemaVersionV2 uint16 = 2
+	// recoveryLedgerSchemaVersion is the schema written for every new
+	// reservation. Schema v1 remains readable only.
+	recoveryLedgerSchemaVersion   = recoveryLedgerSchemaVersionV2
+	maximumRecoveryFrameBytes     = 64 << 10
+	maximumRecoveryLedgerRecords  = 128
+	maximumRecoveryPathComponents = 128
+	maximumRecoveryPathBytes      = 16 << 10
 )
 
 var (
-	recoveryFrameDigestDomain = []byte("ldclean.recovery-frame.digest.v1\x00")
-	recoveryFrameEncMode      = newRecoveryFrameEncMode()
-	recoveryFrameDecMode      = newRecoveryFrameDecMode()
+	recoveryFrameV1DigestDomain = []byte("ldclean.recovery-frame.digest.v1\x00")
+	recoveryFrameV2DigestDomain = []byte("ldclean.recovery-frame.digest.v2\x00")
+	recoveryFrameEncMode        = newRecoveryFrameEncMode()
+	recoveryFrameV1DecMode      = newRecoveryFrameDecMode(true)
+	recoveryFrameV2DecMode      = newRecoveryFrameDecMode(true)
+	recoveryFrameVersionDecMode = newRecoveryFrameDecMode(false)
 )
 
 var (
@@ -102,6 +109,12 @@ type RecoveryTransition struct {
 	MetadataDisposition   RecoveryMetadataDisposition
 }
 
+// RecoveryReservation carries immutable data facts that must be recorded in
+// the first recovery frame. It contains no filesystem authority.
+type RecoveryReservation struct {
+	TrashLayoutBinding domain.TrashLayoutBinding
+}
+
 type recoveryBinding struct {
 	actionBindingDigest  domain.ActionBindingDigest
 	actionBindingPayload []byte
@@ -113,6 +126,7 @@ type recoveryBinding struct {
 	actionKind           domain.ActionKind
 	destination          RecoveryDestination
 	precondition         domain.FilesystemPrecondition
+	trashLayoutBinding   domain.TrashLayoutBinding
 }
 
 type recoveryFrame struct {
@@ -129,12 +143,13 @@ type recoveryFrame struct {
 // intent. Its unexported identity prevents callers from manufacturing a token
 // or changing a binding before a later transition.
 type Recovery struct {
-	binding  recoveryBinding
-	event    RecoveryEvent
-	ordinal  uint8
-	digest   [sha256.Size]byte
-	outcome  RecoveryOutcome
-	metadata RecoveryMetadataDisposition
+	schemaVersion uint16
+	binding       recoveryBinding
+	event         RecoveryEvent
+	ordinal       uint8
+	digest        [sha256.Size]byte
+	outcome       RecoveryOutcome
+	metadata      RecoveryMetadataDisposition
 }
 
 func (recovery Recovery) ActionBindingDigest() domain.ActionBindingDigest {
@@ -151,6 +166,13 @@ func (recovery Recovery) Ordinal() uint8                   { return recovery.ord
 func (recovery Recovery) Outcome() RecoveryOutcome         { return recovery.outcome }
 func (recovery Recovery) MetadataDisposition() RecoveryMetadataDisposition {
 	return recovery.metadata
+}
+
+// TrashLayoutBinding returns the immutable authority-selected Trash layout
+// correlation fact. Its zero value is retained only by legacy v1 or
+// quarantine recoveries and grants no filesystem authority.
+func (recovery Recovery) TrashLayoutBinding() domain.TrashLayoutBinding {
+	return recovery.binding.trashLayoutBinding
 }
 
 // Source returns a defensive copy of the exact relative raw-byte source path.
@@ -214,10 +236,23 @@ func (metadata RecoveryMetadataDisposition) validate() error {
 	}
 }
 
-func newRecoveryBinding(action domain.Action, planDigest domain.PlanDigest, token string) (recoveryBinding, error) {
+func newRecoveryBinding(action domain.Action, planDigest domain.PlanDigest, token string, trashLayoutBinding domain.TrashLayoutBinding) (recoveryBinding, error) {
+	return newRecoveryBindingForSchema(action, planDigest, token, trashLayoutBinding, recoveryLedgerSchemaVersionV2)
+}
+
+func newRecoveryBindingForSchema(
+	action domain.Action,
+	planDigest domain.PlanDigest,
+	token string,
+	trashLayoutBinding domain.TrashLayoutBinding,
+	schemaVersion uint16,
+) (recoveryBinding, error) {
 	cloned := action.Clone()
 	if err := validateRecoveryAction(cloned); err != nil {
 		return recoveryBinding{}, err
+	}
+	if err := validateTrashLayoutBindingForSchema(cloned.Kind, trashLayoutBinding, schemaVersion); err != nil {
+		return recoveryBinding{}, fmt.Errorf("%w: Trash layout binding: %v", ErrRecoveryUnsupported, err)
 	}
 	if err := planDigest.Validate(); err != nil {
 		return recoveryBinding{}, fmt.Errorf("%w: plan digest: %v", ErrRecoveryUnsupported, err)
@@ -242,6 +277,7 @@ func newRecoveryBinding(action domain.Action, planDigest domain.PlanDigest, toke
 		actionKind:           cloned.Kind,
 		destination:          destinationForAction(cloned.Kind),
 		precondition:         cloneFilesystemPrecondition(*filesystem),
+		trashLayoutBinding:   trashLayoutBinding,
 	}, nil
 }
 
@@ -282,6 +318,10 @@ func destinationForAction(kind domain.ActionKind) RecoveryDestination {
 }
 
 func validateRecoveryBinding(binding recoveryBinding) error {
+	return validateRecoveryBindingForSchema(binding, recoveryLedgerSchemaVersionV2)
+}
+
+func validateRecoveryBindingForSchema(binding recoveryBinding, schemaVersion uint16) error {
 	if err := binding.actionBindingDigest.Validate(); err != nil {
 		return fmt.Errorf("%w: action binding digest: %v", ErrRecoveryCorrupt, err)
 	}
@@ -305,6 +345,9 @@ func validateRecoveryBinding(binding recoveryBinding) error {
 	}
 	if binding.actionKind != domain.ActionTrashPath && binding.actionKind != domain.ActionQuarantinePath {
 		return fmt.Errorf("%w: action kind %q is not recoverable in Phase 4A", ErrRecoveryCorrupt, binding.actionKind)
+	}
+	if err := validateTrashLayoutBindingForSchema(binding.actionKind, binding.trashLayoutBinding, schemaVersion); err != nil {
+		return fmt.Errorf("%w: stored Trash layout binding: %v", ErrRecoveryCorrupt, err)
 	}
 	if err := binding.destination.validate(); err != nil {
 		return fmt.Errorf("%w: stored destination: %v", ErrRecoveryCorrupt, err)
@@ -337,7 +380,7 @@ func validateRecoveryBinding(binding recoveryBinding) error {
 	if boundPlanDigest != binding.planDigest || !binding.actionBindingDigest.Verify(binding.actionBindingPayload) {
 		return fmt.Errorf("%w: retained action binding digest does not match its payload", ErrRecoveryCorrupt)
 	}
-	expected, err := newRecoveryBinding(boundAction, boundPlanDigest, binding.token)
+	expected, err := newRecoveryBindingForSchema(boundAction, boundPlanDigest, binding.token, binding.trashLayoutBinding, schemaVersion)
 	if err != nil {
 		return fmt.Errorf("%w: retained action binding projection: %v", ErrRecoveryCorrupt, err)
 	}
@@ -345,6 +388,33 @@ func validateRecoveryBinding(binding recoveryBinding) error {
 		return fmt.Errorf("%w: retained action binding payload does not match its projected facts", ErrRecoveryCorrupt)
 	}
 	return nil
+}
+
+func validateTrashLayoutBindingForSchema(kind domain.ActionKind, binding domain.TrashLayoutBinding, schemaVersion uint16) error {
+	switch schemaVersion {
+	case recoveryLedgerSchemaVersionV1:
+		if !binding.IsZero() {
+			return fmt.Errorf("v1 recovery frame carries a Trash layout binding")
+		}
+		return nil
+	case recoveryLedgerSchemaVersionV2:
+		switch kind {
+		case domain.ActionTrashPath:
+			if err := binding.Validate(); err != nil {
+				return fmt.Errorf("TrashPath requires a valid binding: %v", err)
+			}
+			return nil
+		case domain.ActionQuarantinePath:
+			if !binding.IsZero() {
+				return fmt.Errorf("QuarantinePath must not carry a Trash layout binding")
+			}
+			return nil
+		default:
+			return fmt.Errorf("unsupported recovery action kind %q", kind)
+		}
+	default:
+		return fmt.Errorf("unsupported recovery schema version %d", schemaVersion)
+	}
 }
 
 func recoveryActionBindingDecodeLimits() planproto.DecodeLimits {
@@ -393,8 +463,12 @@ func cloneFilesystemPrecondition(precondition domain.FilesystemPrecondition) dom
 }
 
 func newIntentFrame(binding recoveryBinding) (recoveryFrame, error) {
+	return newIntentFrameForSchema(binding, recoveryLedgerSchemaVersionV2)
+}
+
+func newIntentFrameForSchema(binding recoveryBinding, schemaVersion uint16) (recoveryFrame, error) {
 	frame := recoveryFrame{
-		schemaVersion: recoveryLedgerSchemaVersion,
+		schemaVersion: schemaVersion,
 		binding:       binding,
 		event:         RecoveryEventIntentReserved,
 	}
@@ -409,6 +483,9 @@ func appendRecoveryTransition(history []recoveryFrame, transition RecoveryTransi
 	if err != nil {
 		return recoveryFrame{}, err
 	}
+	if recovery.schemaVersion != recoveryLedgerSchemaVersionV2 {
+		return recoveryFrame{}, fmt.Errorf("%w: legacy v1 recovery histories are read-only", ErrRecoveryUnsupported)
+	}
 	if len(history) == 0 || history[len(history)-1].ordinal >= linuxfsMaximumLedgerOrdinal() {
 		return recoveryFrame{}, fmt.Errorf("%w: recovery transition ordinal capacity reached", ErrRecoveryConflict)
 	}
@@ -420,7 +497,7 @@ func appendRecoveryTransition(history []recoveryFrame, transition RecoveryTransi
 		return recoveryFrame{}, err
 	}
 	frame := recoveryFrame{
-		schemaVersion: recoveryLedgerSchemaVersion,
+		schemaVersion: recovery.schemaVersion,
 		binding:       recovery.binding,
 		event:         transition.Event,
 		ordinal:       recovery.ordinal + 1,
@@ -462,6 +539,9 @@ func replayRecoveryFrames(frames []recoveryFrame) (Recovery, error) {
 			}
 			continue
 		}
+		if frame.schemaVersion != recovery.schemaVersion {
+			return Recovery{}, fmt.Errorf("%w: frame %d changed recovery schema version", ErrRecoveryCorrupt, index)
+		}
 		if !sameRecoveryBinding(recovery.binding, frame.binding) {
 			return Recovery{}, fmt.Errorf("%w: frame %d changed immutable reservation binding", ErrRecoveryCorrupt, index)
 		}
@@ -493,16 +573,20 @@ func recoveryFromFrame(frame recoveryFrame) (Recovery, error) {
 		return Recovery{}, err
 	}
 	return Recovery{
-		binding:  frame.binding,
-		event:    frame.event,
-		ordinal:  frame.ordinal,
-		digest:   digest,
-		outcome:  frame.outcome,
-		metadata: frame.metadata,
+		schemaVersion: frame.schemaVersion,
+		binding:       frame.binding,
+		event:         frame.event,
+		ordinal:       frame.ordinal,
+		digest:        digest,
+		outcome:       frame.outcome,
+		metadata:      frame.metadata,
 	}, nil
 }
 
 func (recovery *Recovery) apply(frame recoveryFrame) error {
+	if recovery.schemaVersion != frame.schemaVersion {
+		return fmt.Errorf("%w: transition changed recovery schema version", ErrRecoveryCorrupt)
+	}
 	digest, err := recoveryFrameDigest(frame)
 	if err != nil {
 		return err
@@ -516,7 +600,7 @@ func (recovery *Recovery) apply(frame recoveryFrame) error {
 }
 
 func validateRecoveryTransition(recovery Recovery, transition RecoveryTransition) error {
-	if err := validateRecoveryBinding(recovery.binding); err != nil {
+	if err := validateRecoveryBindingForSchema(recovery.binding, recovery.schemaVersion); err != nil {
 		return err
 	}
 	if recovery.Closed() {
@@ -637,17 +721,19 @@ func validateRestoreIndeterminateReconciliation(transition RecoveryTransition) e
 }
 
 func validateRecoveryFrame(frame recoveryFrame) error {
-	if frame.schemaVersion != recoveryLedgerSchemaVersion {
+	switch frame.schemaVersion {
+	case recoveryLedgerSchemaVersionV1, recoveryLedgerSchemaVersionV2:
+	default:
 		return fmt.Errorf("%w: unsupported recovery schema version %d", ErrRecoveryCorrupt, frame.schemaVersion)
 	}
-	if err := validateRecoveryBinding(frame.binding); err != nil {
+	if err := validateRecoveryBindingForSchema(frame.binding, frame.schemaVersion); err != nil {
 		return err
 	}
 	if err := frame.event.validate(); err != nil {
 		return fmt.Errorf("%w: stored event: %v", ErrRecoveryCorrupt, err)
 	}
 	if frame.ordinal > linuxfsMaximumLedgerOrdinal() {
-		return fmt.Errorf("%w: frame ordinal %d exceeds v1 bound", ErrRecoveryCorrupt, frame.ordinal)
+		return fmt.Errorf("%w: frame ordinal %d exceeds recovery bound", ErrRecoveryCorrupt, frame.ordinal)
 	}
 	if frame.ordinal == 0 {
 		if frame.event != RecoveryEventIntentReserved || frame.predecessor != ([sha256.Size]byte{}) || frame.outcome != "" || frame.metadata != "" {
@@ -685,7 +771,8 @@ func sameRecoveryBinding(left, right recoveryBinding) bool {
 		left.actionID == right.actionID &&
 		left.actionKind == right.actionKind &&
 		left.destination == right.destination &&
-		sameFilesystemPrecondition(left.precondition, right.precondition)
+		sameFilesystemPrecondition(left.precondition, right.precondition) &&
+		left.trashLayoutBinding.Equal(right.trashLayoutBinding)
 }
 
 func sameFilesystemPrecondition(left, right domain.FilesystemPrecondition) bool {
@@ -708,26 +795,31 @@ func newRecoveryFrameEncMode() cbor.EncMode {
 	return mode
 }
 
-func newRecoveryFrameDecMode() cbor.DecMode {
-	mode, err := cbor.DecOptions{
+func newRecoveryFrameDecMode(rejectUnknownFields bool) cbor.DecMode {
+	options := cbor.DecOptions{
 		DupMapKey:          cbor.DupMapKeyEnforcedAPF,
 		MaxNestedLevels:    16,
 		MaxArrayElements:   maximumRecoveryPathComponents,
 		MaxMapPairs:        32,
 		IndefLength:        cbor.IndefLengthForbidden,
 		TagsMd:             cbor.TagsForbidden,
-		ExtraReturnErrors:  cbor.ExtraDecErrorUnknownField,
 		UTF8:               cbor.UTF8RejectInvalid,
 		FieldNameMatching:  cbor.FieldNameMatchingCaseSensitive,
 		ByteStringToString: cbor.ByteStringToStringForbidden,
-	}.DecMode()
+	}
+	if rejectUnknownFields {
+		options.ExtraReturnErrors = cbor.ExtraDecErrorUnknownField
+	}
+	mode, err := options.DecMode()
 	if err != nil {
 		panic(fmt.Sprintf("recovery ledger strict CBOR mode: %v", err))
 	}
 	return mode
 }
 
-type recoveryFrameWire struct {
+// recoveryFrameV1Wire is frozen: its 16-key canonical map and digest preimage
+// are retained exactly for historical recovery records.
+type recoveryFrameV1Wire struct {
 	SchemaVersion         uint16                     `cbor:"schema_version"`
 	ActionBindingDigest   []byte                     `cbor:"action_binding_digest"`
 	ActionBindingPayload  []byte                     `cbor:"action_binding_payload"`
@@ -744,6 +836,39 @@ type recoveryFrameWire struct {
 	PredecessorDigest     []byte                     `cbor:"predecessor_digest"`
 	ReconciliationOutcome string                     `cbor:"reconciliation_outcome"`
 	MetadataDisposition   string                     `cbor:"metadata_disposition"`
+}
+
+// recoveryFrameWire remains the v1-only name used by legacy wire tests.
+// Do not add v2 fields here: that would change the canonical v1 preimage.
+type recoveryFrameWire = recoveryFrameV1Wire
+
+// recoveryFrameV2Wire deliberately duplicates the frozen v1 fields and adds
+// the mandatory-on-wire Trash layout field. A nil value canonically encodes
+// absence for QuarantinePath; TrashPath requires a valid nonzero value.
+type recoveryFrameV2Wire struct {
+	SchemaVersion         uint16                     `cbor:"schema_version"`
+	ActionBindingDigest   []byte                     `cbor:"action_binding_digest"`
+	ActionBindingPayload  []byte                     `cbor:"action_binding_payload"`
+	PlanDigest            []byte                     `cbor:"plan_digest"`
+	Token                 string                     `cbor:"token"`
+	Root                  string                     `cbor:"root"`
+	Source                [][]byte                   `cbor:"source"`
+	ActionID              string                     `cbor:"action_id"`
+	ActionKind            string                     `cbor:"action_kind"`
+	Destination           string                     `cbor:"destination"`
+	Precondition          filesystemPreconditionWire `cbor:"precondition"`
+	Event                 string                     `cbor:"event"`
+	Ordinal               uint8                      `cbor:"ordinal"`
+	PredecessorDigest     []byte                     `cbor:"predecessor_digest"`
+	ReconciliationOutcome string                     `cbor:"reconciliation_outcome"`
+	MetadataDisposition   string                     `cbor:"metadata_disposition"`
+	TrashLayoutBinding    []byte                     `cbor:"trash_layout_binding"`
+}
+
+// recoveryFrameVersionWire is used only to route a bounded frame to the
+// matching strict decoder. It must never be treated as successful validation.
+type recoveryFrameVersionWire struct {
+	SchemaVersion uint16 `cbor:"schema_version"`
 }
 
 type filesystemPreconditionWire struct {
@@ -781,7 +906,18 @@ func encodeRecoveryFrame(frame recoveryFrame) ([]byte, error) {
 	if err := validateRecoveryFrame(frame); err != nil {
 		return nil, err
 	}
-	encoded, err := recoveryFrameEncMode.Marshal(toRecoveryFrameWire(frame))
+	var (
+		encoded []byte
+		err     error
+	)
+	switch frame.schemaVersion {
+	case recoveryLedgerSchemaVersionV1:
+		encoded, err = recoveryFrameEncMode.Marshal(toRecoveryFrameWire(frame))
+	case recoveryLedgerSchemaVersionV2:
+		encoded, err = recoveryFrameEncMode.Marshal(toRecoveryFrameV2Wire(frame))
+	default:
+		return nil, fmt.Errorf("%w: unsupported recovery schema version %d", ErrRecoveryCorrupt, frame.schemaVersion)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: canonical recovery frame encode: %v", ErrRecoveryCorrupt, err)
 	}
@@ -795,11 +931,31 @@ func decodeRecoveryFrame(encoded []byte) (recoveryFrame, error) {
 	if len(encoded) == 0 || len(encoded) > maximumRecoveryFrameBytes {
 		return recoveryFrame{}, fmt.Errorf("%w: recovery frame is outside %d-byte bound", ErrRecoveryCorrupt, maximumRecoveryFrameBytes)
 	}
-	var wire recoveryFrameWire
-	if err := recoveryFrameDecMode.Unmarshal(encoded, &wire); err != nil {
-		return recoveryFrame{}, fmt.Errorf("%w: recovery frame decode: %v", ErrRecoveryCorrupt, err)
+	var version recoveryFrameVersionWire
+	if err := recoveryFrameVersionDecMode.Unmarshal(encoded, &version); err != nil {
+		return recoveryFrame{}, fmt.Errorf("%w: recovery frame version probe: %v", ErrRecoveryCorrupt, err)
 	}
-	frame, err := fromRecoveryFrameWire(wire)
+
+	var (
+		frame recoveryFrame
+		err   error
+	)
+	switch version.SchemaVersion {
+	case recoveryLedgerSchemaVersionV1:
+		var wire recoveryFrameV1Wire
+		if err := recoveryFrameV1DecMode.Unmarshal(encoded, &wire); err != nil {
+			return recoveryFrame{}, fmt.Errorf("%w: v1 recovery frame decode: %v", ErrRecoveryCorrupt, err)
+		}
+		frame, err = fromRecoveryFrameWire(wire)
+	case recoveryLedgerSchemaVersionV2:
+		var wire recoveryFrameV2Wire
+		if err := recoveryFrameV2DecMode.Unmarshal(encoded, &wire); err != nil {
+			return recoveryFrame{}, fmt.Errorf("%w: v2 recovery frame decode: %v", ErrRecoveryCorrupt, err)
+		}
+		frame, err = fromRecoveryFrameV2Wire(wire)
+	default:
+		return recoveryFrame{}, fmt.Errorf("%w: unsupported recovery schema version %d", ErrRecoveryCorrupt, version.SchemaVersion)
+	}
 	if err != nil {
 		return recoveryFrame{}, err
 	}
@@ -808,7 +964,7 @@ func decodeRecoveryFrame(encoded []byte) (recoveryFrame, error) {
 		return recoveryFrame{}, err
 	}
 	if !bytes.Equal(encoded, canonical) {
-		return recoveryFrame{}, fmt.Errorf("%w: recovery frame is not canonical v1 CBOR", ErrRecoveryCorrupt)
+		return recoveryFrame{}, fmt.Errorf("%w: recovery frame is not canonical schema v%d CBOR", ErrRecoveryCorrupt, version.SchemaVersion)
 	}
 	return frame, nil
 }
@@ -818,8 +974,17 @@ func recoveryFrameDigest(frame recoveryFrame) ([sha256.Size]byte, error) {
 	if err != nil {
 		return [sha256.Size]byte{}, err
 	}
+	var domainSeparator []byte
+	switch frame.schemaVersion {
+	case recoveryLedgerSchemaVersionV1:
+		domainSeparator = recoveryFrameV1DigestDomain
+	case recoveryLedgerSchemaVersionV2:
+		domainSeparator = recoveryFrameV2DigestDomain
+	default:
+		return [sha256.Size]byte{}, fmt.Errorf("%w: unsupported recovery schema version %d", ErrRecoveryCorrupt, frame.schemaVersion)
+	}
 	hash := sha256.New()
-	_, _ = hash.Write(recoveryFrameDigestDomain)
+	_, _ = hash.Write(domainSeparator)
 	_, _ = hash.Write(encoded)
 	var digest [sha256.Size]byte
 	copy(digest[:], hash.Sum(nil))
@@ -847,7 +1012,66 @@ func toRecoveryFrameWire(frame recoveryFrame) recoveryFrameWire {
 	}
 }
 
+func toRecoveryFrameV2Wire(frame recoveryFrame) recoveryFrameV2Wire {
+	var trashLayoutBinding []byte
+	if !frame.binding.trashLayoutBinding.IsZero() {
+		trashLayoutBinding = frame.binding.trashLayoutBinding.Bytes()
+	}
+	return recoveryFrameV2Wire{
+		SchemaVersion:         frame.schemaVersion,
+		ActionBindingDigest:   frame.binding.actionBindingDigest.Bytes(),
+		ActionBindingPayload:  append([]byte(nil), frame.binding.actionBindingPayload...),
+		PlanDigest:            frame.binding.planDigest.Bytes(),
+		Token:                 frame.binding.token,
+		Root:                  frame.binding.root.String(),
+		Source:                frame.binding.source.Components(),
+		ActionID:              frame.binding.actionID.String(),
+		ActionKind:            string(frame.binding.actionKind),
+		Destination:           string(frame.binding.destination),
+		Precondition:          toFilesystemPreconditionWire(frame.binding.precondition),
+		Event:                 string(frame.event),
+		Ordinal:               frame.ordinal,
+		PredecessorDigest:     append([]byte(nil), frame.predecessor[:]...),
+		ReconciliationOutcome: string(frame.outcome),
+		MetadataDisposition:   string(frame.metadata),
+		TrashLayoutBinding:    trashLayoutBinding,
+	}
+}
+
 func fromRecoveryFrameWire(wire recoveryFrameWire) (recoveryFrame, error) {
+	return fromRecoveryFrameWireWithTrashLayoutBinding(wire, domain.TrashLayoutBinding{})
+}
+
+func fromRecoveryFrameV2Wire(wire recoveryFrameV2Wire) (recoveryFrame, error) {
+	var trashLayoutBinding domain.TrashLayoutBinding
+	if wire.TrashLayoutBinding != nil {
+		parsed, err := domain.NewTrashLayoutBinding(wire.TrashLayoutBinding)
+		if err != nil {
+			return recoveryFrame{}, fmt.Errorf("%w: Trash layout binding: %v", ErrRecoveryCorrupt, err)
+		}
+		trashLayoutBinding = parsed
+	}
+	return fromRecoveryFrameWireWithTrashLayoutBinding(recoveryFrameV1Wire{
+		SchemaVersion:         wire.SchemaVersion,
+		ActionBindingDigest:   wire.ActionBindingDigest,
+		ActionBindingPayload:  wire.ActionBindingPayload,
+		PlanDigest:            wire.PlanDigest,
+		Token:                 wire.Token,
+		Root:                  wire.Root,
+		Source:                wire.Source,
+		ActionID:              wire.ActionID,
+		ActionKind:            wire.ActionKind,
+		Destination:           wire.Destination,
+		Precondition:          wire.Precondition,
+		Event:                 wire.Event,
+		Ordinal:               wire.Ordinal,
+		PredecessorDigest:     wire.PredecessorDigest,
+		ReconciliationOutcome: wire.ReconciliationOutcome,
+		MetadataDisposition:   wire.MetadataDisposition,
+	}, trashLayoutBinding)
+}
+
+func fromRecoveryFrameWireWithTrashLayoutBinding(wire recoveryFrameV1Wire, trashLayoutBinding domain.TrashLayoutBinding) (recoveryFrame, error) {
 	bindingDigest, err := domain.NewActionBindingDigest(wire.ActionBindingDigest)
 	if err != nil {
 		return recoveryFrame{}, fmt.Errorf("%w: action binding digest: %v", ErrRecoveryCorrupt, err)
@@ -890,6 +1114,7 @@ func fromRecoveryFrameWire(wire recoveryFrameWire) (recoveryFrame, error) {
 			actionKind:           domain.ActionKind(wire.ActionKind),
 			destination:          RecoveryDestination(wire.Destination),
 			precondition:         precondition,
+			trashLayoutBinding:   trashLayoutBinding,
 		},
 		event:       RecoveryEvent(wire.Event),
 		ordinal:     wire.Ordinal,
@@ -1048,12 +1273,14 @@ func NewRecoveryLedger(directory *linuxfs.PrivateDirectoryLease) (*RecoveryLedge
 	return &RecoveryLedger{sessions: linuxfsRecoveryLedgerSessions{directory: directory}}, nil
 }
 
-// Reserve creates the first immutable intent frame for one validated Trash or
-// quarantine action. It never selects a destination path or performs a
-// content operation. If publication becomes ambiguous after creation, it
-// returns the candidate opaque recovery identity together with ErrInterrupted
-// so a caller can reload rather than mint a new token.
-func (ledger *RecoveryLedger) Reserve(ctx context.Context, action domain.Action, planDigest domain.PlanDigest) (Recovery, error) {
+// Reserve creates the first immutable v2 intent frame for one validated Trash
+// or quarantine action. A Trash reservation must include its selected
+// data-only layout binding before any durable intent is published. It never
+// selects a destination path or performs a content operation. If publication
+// becomes ambiguous after creation, it returns the candidate opaque recovery
+// identity together with ErrInterrupted so a caller can reload rather than
+// mint a new token.
+func (ledger *RecoveryLedger) Reserve(ctx context.Context, action domain.Action, planDigest domain.PlanDigest, reservation RecoveryReservation) (Recovery, error) {
 	if err := ledger.validate(); err != nil {
 		return Recovery{}, err
 	}
@@ -1062,6 +1289,9 @@ func (ledger *RecoveryLedger) Reserve(ctx context.Context, action domain.Action,
 	}
 	clonedAction := action.Clone()
 	if err := validateRecoveryAction(clonedAction); err != nil {
+		return Recovery{}, err
+	}
+	if err := validateRecoveryReservation(clonedAction.Kind, reservation); err != nil {
 		return Recovery{}, err
 	}
 	if err := planDigest.Validate(); err != nil {
@@ -1074,7 +1304,7 @@ func (ledger *RecoveryLedger) Reserve(ctx context.Context, action domain.Action,
 		if err != nil {
 			return err
 		}
-		binding, err := newRecoveryBinding(clonedAction, planDigest, token)
+		binding, err := newRecoveryBinding(clonedAction, planDigest, token, reservation.TrashLayoutBinding)
 		if err != nil {
 			return err
 		}
@@ -1125,6 +1355,13 @@ func (ledger *RecoveryLedger) Reserve(ctx context.Context, action domain.Action,
 	return reserved, nil
 }
 
+func validateRecoveryReservation(kind domain.ActionKind, reservation RecoveryReservation) error {
+	if err := validateTrashLayoutBindingForSchema(kind, reservation.TrashLayoutBinding, recoveryLedgerSchemaVersionV2); err != nil {
+		return fmt.Errorf("%w: recovery reservation: %v", ErrRecoveryUnsupported, err)
+	}
+	return nil
+}
+
 // Transition appends one fact from the closed recovery graph. It reloads and
 // validates the retained history under the same write lock, so a stale caller
 // view cannot choose an ordinal, predecessor, or content-side outcome.
@@ -1145,11 +1382,14 @@ func (ledger *RecoveryLedger) Transition(ctx context.Context, recovery Recovery,
 		if err != nil {
 			return err
 		}
-		if err := requireRecoveryLedgerPublicationCapacity(histories); err != nil {
-			return err
-		}
 		history, err := findRecoveryHistory(histories, recovery)
 		if err != nil {
+			return err
+		}
+		if history.recovery.schemaVersion != recoveryLedgerSchemaVersionV2 {
+			return fmt.Errorf("%w: legacy v1 recovery histories are read-only", ErrRecoveryUnsupported)
+		}
+		if err := requireRecoveryLedgerPublicationCapacity(histories); err != nil {
 			return err
 		}
 		next, err := appendRecoveryTransition(history.frames, transition)

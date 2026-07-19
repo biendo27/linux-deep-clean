@@ -28,6 +28,19 @@ ledger port and the existing descriptor-rooted safety APIs.
   gates before claiming the content-operation exit. Phase 4A does not supply
   those proofs.
 
+## Incremental progress
+
+- [x] Metadata-only reconciliation for one current v2 Trash
+  `metadata_indeterminate` ticket: its immutable authority-selected
+  layout/mapping binding must match the supplied topology-qualified lease
+  before an exact, read-only owned `<token>.trashinfo` probe records only
+  absent or retained metadata as a closed not-applied ledger fact. Readable
+  unbound v1 histories remain outstanding. This path does not scan, move,
+  restore, delete, or clean up.
+- [ ] Broad orphan/content reconciliation, high-level restore, quarantine
+  content operations, retention, and the disposable-VM/adversarial exit gates
+  remain pending.
+
 ## Exit gate
 
 All remaining Phase 3 success criteria and focused/race/integration/VM gates

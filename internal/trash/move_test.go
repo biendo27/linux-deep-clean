@@ -28,6 +28,9 @@ func TestMoveToTrashRecordsVerifiedFactsAroundFilesystemEffects(t *testing.T) {
 	if ticket == nil || ticket.Event() != recoveryport.EventMoveVerified || ticket.Closed() {
 		t.Fatalf("moveToTrashWith() ticket = %#v, want open move-verified ticket", ticket)
 	}
+	if len(ledger.reservations) != 1 || !ledger.reservations[0].TrashLayoutBinding.Equal(request.trashLayoutBinding) {
+		t.Fatalf("durable reservation binding = %#v, want exact move layout binding", ledger.reservations)
+	}
 	assertTrashMoveTestLog(t, ledger.log,
 		"reserve",
 		"transition:metadata_dispatch_recorded",
@@ -205,6 +208,47 @@ func TestMoveToTrashRejectsMismatchedReservedTicketBeforeMetadataDispatch(t *tes
 	assertTrashMoveTestLog(t, ledger.log, "reserve")
 }
 
+func TestMoveToTrashRejectsReservedTicketWithDifferentLayoutBindingBeforeMetadataDispatch(t *testing.T) {
+	request := newTrashMoveTestRequest(t)
+	ledger := newTrashMoveTestLedger(request)
+	otherBinding, err := domain.NewTrashLayoutBinding(bytes.Repeat([]byte{3}, 32))
+	if err != nil {
+		t.Fatalf("NewTrashLayoutBinding() error = %v", err)
+	}
+	ledger.ticket.trashLayoutBinding = otherBinding
+	operations := newTrashMoveTestOperations(t, ledger, linuxfs.TrashMoveVerified, nil)
+
+	ticket, err := moveToTrashWith(context.Background(), ledger, request, operations)
+	if !errors.Is(err, linuxfs.ErrUnsupported) {
+		t.Fatalf("moveToTrashWith() mismatched layout ticket error = %v, want ErrUnsupported", err)
+	}
+	if ticket == nil || !ticket.TrashLayoutBinding().Equal(otherBinding) {
+		t.Fatalf("moveToTrashWith() mismatched layout ticket = %#v, want retained reserved ticket", ticket)
+	}
+	assertTrashMoveTestLog(t, ledger.log, "reserve")
+}
+
+func TestTransitionTrashMoveTicketRejectsSubstitutedTicketIdentity(t *testing.T) {
+	request := newTrashMoveTestRequest(t)
+	base := newTrashMoveTestLedger(request)
+	original := base.ticket
+	ledger := &trashTokenSubstitutionLedger{
+		trashMoveTestLedger: base,
+		token:               "ldc-" + string(bytes.Repeat([]byte{'b'}, 64)),
+	}
+
+	ticket, err := transitionTrashMoveTicket(context.Background(), ledger, original, request, recoveryport.Transition{Event: recoveryport.EventMetadataDispatchRecorded})
+	if !errors.Is(err, linuxfs.ErrUnsupported) {
+		t.Fatalf("transitionTrashMoveTicket() error = %v, want ErrUnsupported", err)
+	}
+	if ticket != original {
+		t.Fatalf("transitionTrashMoveTicket() ticket = %#v, want original ticket %#v", ticket, original)
+	}
+	if len(base.transitions) != 1 {
+		t.Fatalf("ledger transitions = %d, want one attempted transition", len(base.transitions))
+	}
+}
+
 func newTrashMoveTestRequest(t *testing.T) trashMoveRequest {
 	t.Helper()
 	root := mustTrashMoveRoot(t, "trash-move-root")
@@ -230,13 +274,14 @@ func newTrashMoveTestRequest(t *testing.T) trashMoveRequest {
 		t.Fatalf("NewActionID() error = %v", err)
 	}
 	return trashMoveRequest{
-		action:       domain.Action{ID: actionID},
-		planDigest:   mustTrashMovePlanDigest(t),
-		root:         root,
-		source:       path,
-		basename:     "item",
-		precondition: precondition,
-		deletedAt:    time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC),
+		action:             domain.Action{ID: actionID},
+		planDigest:         mustTrashMovePlanDigest(t),
+		root:               root,
+		source:             path,
+		basename:           "item",
+		precondition:       precondition,
+		trashLayoutBinding: mustTrashMoveLayoutBinding(t),
+		deletedAt:          time.Date(2026, time.July, 18, 12, 0, 0, 0, time.UTC),
 	}
 }
 
@@ -247,6 +292,15 @@ func mustTrashMovePlanDigest(t *testing.T) domain.PlanDigest {
 		t.Fatalf("NewPlanDigest() error = %v", err)
 	}
 	return digest
+}
+
+func mustTrashMoveLayoutBinding(t *testing.T) domain.TrashLayoutBinding {
+	t.Helper()
+	binding, err := domain.NewTrashLayoutBinding(bytes.Repeat([]byte{2}, 32))
+	if err != nil {
+		t.Fatalf("NewTrashLayoutBinding() error = %v", err)
+	}
+	return binding
 }
 
 func mustTrashMoveRoot(t *testing.T, value string) domain.TrustedRootID {
@@ -289,15 +343,16 @@ func trashMoveTestSnapshot() domain.FilesystemSnapshot {
 }
 
 type trashMoveTestTicket struct {
-	token    string
-	root     domain.TrustedRootID
-	source   pathbytes.BytePath
-	actionID domain.ActionID
-	precond  domain.FilesystemPrecondition
-	event    recoveryport.Event
-	outcome  recoveryport.Outcome
-	metadata recoveryport.MetadataDisposition
-	closed   bool
+	token              string
+	root               domain.TrustedRootID
+	source             pathbytes.BytePath
+	actionID           domain.ActionID
+	precond            domain.FilesystemPrecondition
+	trashLayoutBinding domain.TrashLayoutBinding
+	event              recoveryport.Event
+	outcome            recoveryport.Outcome
+	metadata           recoveryport.MetadataDisposition
+	closed             bool
 }
 
 func (ticket *trashMoveTestTicket) Token() string                 { return ticket.token }
@@ -311,6 +366,9 @@ func (ticket *trashMoveTestTicket) Destination() recoveryport.Destination {
 func (ticket *trashMoveTestTicket) Precondition() domain.FilesystemPrecondition {
 	return ticket.precond
 }
+func (ticket *trashMoveTestTicket) TrashLayoutBinding() domain.TrashLayoutBinding {
+	return ticket.trashLayoutBinding
+}
 func (ticket *trashMoveTestTicket) Event() recoveryport.Event     { return ticket.event }
 func (ticket *trashMoveTestTicket) Outcome() recoveryport.Outcome { return ticket.outcome }
 func (ticket *trashMoveTestTicket) MetadataDisposition() recoveryport.MetadataDisposition {
@@ -321,28 +379,36 @@ func (ticket *trashMoveTestTicket) Closed() bool { return ticket.closed }
 type trashMoveTestLedger struct {
 	ticket                     *trashMoveTestTicket
 	log                        []string
+	reservations               []recoveryport.Reservation
 	transitions                []recoveryport.Transition
 	transitionErrors           map[recoveryport.Event]error
 	nilTicketOnTransitionError map[recoveryport.Event]bool
 }
 
+type trashTokenSubstitutionLedger struct {
+	*trashMoveTestLedger
+	token string
+}
+
 func newTrashMoveTestLedger(request trashMoveRequest) *trashMoveTestLedger {
 	return &trashMoveTestLedger{
 		ticket: &trashMoveTestTicket{
-			token:    "ldc-0123456789abcdef",
-			root:     request.root,
-			source:   request.source,
-			actionID: request.action.ID,
-			precond:  request.precondition,
-			event:    recoveryport.EventIntentReserved,
+			token:              "ldc-0123456789abcdef",
+			root:               request.root,
+			source:             request.source,
+			actionID:           request.action.ID,
+			precond:            request.precondition,
+			trashLayoutBinding: request.trashLayoutBinding,
+			event:              recoveryport.EventIntentReserved,
 		},
 		transitionErrors:           make(map[recoveryport.Event]error),
 		nilTicketOnTransitionError: make(map[recoveryport.Event]bool),
 	}
 }
 
-func (ledger *trashMoveTestLedger) Reserve(context.Context, domain.Action, domain.PlanDigest) (recoveryport.Ticket, error) {
+func (ledger *trashMoveTestLedger) Reserve(_ context.Context, _ domain.Action, _ domain.PlanDigest, reservation recoveryport.Reservation) (recoveryport.Ticket, error) {
 	ledger.log = append(ledger.log, "reserve")
+	ledger.reservations = append(ledger.reservations, reservation)
 	return ledger.ticket, nil
 }
 
@@ -359,6 +425,18 @@ func (ledger *trashMoveTestLedger) Transition(_ context.Context, _ recoveryport.
 	}
 	ledger.ticket = &updated
 	return ledger.ticket, ledger.transitionErrors[transition.Event]
+}
+
+func (ledger *trashTokenSubstitutionLedger) Transition(_ context.Context, _ recoveryport.Ticket, transition recoveryport.Transition) (recoveryport.Ticket, error) {
+	ledger.log = append(ledger.log, "transition:"+string(transition.Event))
+	ledger.transitions = append(ledger.transitions, transition)
+	updated := *ledger.ticket
+	updated.token = ledger.token
+	updated.event = transition.Event
+	updated.outcome = transition.ReconciliationOutcome
+	updated.metadata = transition.MetadataDisposition
+	updated.closed = transition.Event == recoveryport.EventReconciliationResolved && transition.ReconciliationOutcome != recoveryport.OutcomeMoveVerified
+	return &updated, nil
 }
 
 func (ledger *trashMoveTestLedger) FindOutstanding(context.Context, domain.TrustedRootID, pathbytes.BytePath) (recoveryport.Ticket, bool, error) {

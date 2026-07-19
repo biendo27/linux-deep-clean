@@ -19,6 +19,7 @@ const (
 var (
 	planDigestDomain          = []byte("ldclean.plan.digest.v1\x00")
 	actionBindingDigestDomain = []byte("ldclean.action-binding.digest.v1\x00")
+	trashLayoutBindingDomain  = []byte("ldclean.trash-layout-binding.v1\x00")
 )
 
 // ProviderID identifies a compiled provider. It is not a filesystem path or
@@ -74,6 +75,13 @@ type PlanDigest struct {
 // digest. It is audit/correlation evidence only: it does not prove that the
 // action is a member of a verified full plan and never grants authority.
 type ActionBindingDigest struct {
+	value [planDigestLength]byte
+}
+
+// TrashLayoutBinding identifies the complete authority-selected Trash layout
+// evidence used to bind durable metadata reconciliation. It is correlation
+// data only: it never contains a path or descriptor and grants no authority.
+type TrashLayoutBinding struct {
 	value [planDigestLength]byte
 }
 
@@ -202,6 +210,16 @@ func NewActionBindingDigest(value []byte) (ActionBindingDigest, error) {
 	return ActionBindingDigest{value: parsed}, nil
 }
 
+// NewTrashLayoutBinding constructs a nonzero Trash-layout binding from
+// exactly one SHA-256 value.
+func NewTrashLayoutBinding(value []byte) (TrashLayoutBinding, error) {
+	parsed, err := newDigest(value)
+	if err != nil {
+		return TrashLayoutBinding{}, err
+	}
+	return TrashLayoutBinding{value: parsed}, nil
+}
+
 func NewConfigDigest(value []byte) (ConfigDigest, error) {
 	parsed, err := newDigest(value)
 	if err != nil {
@@ -241,6 +259,18 @@ func ComputeActionBindingDigest(canonicalBinding []byte) ActionBindingDigest {
 	return ActionBindingDigest{value: value}
 }
 
+// ComputeTrashLayoutBinding hashes canonical authority-selected Trash layout
+// evidence with a fixed domain separator. Callers must use an unambiguous
+// encoding; only the opaque digest is exposed to consumers.
+func ComputeTrashLayoutBinding(canonicalBinding []byte) TrashLayoutBinding {
+	hash := sha256.New()
+	_, _ = hash.Write(trashLayoutBindingDomain)
+	_, _ = hash.Write(canonicalBinding)
+	var value [planDigestLength]byte
+	copy(value[:], hash.Sum(nil))
+	return TrashLayoutBinding{value: value}
+}
+
 // Verify reports whether canonical body bytes bind to this digest. It does not
 // grant authority and must not be used as an authorization decision.
 func (digest PlanDigest) Verify(canonicalBody []byte) bool {
@@ -253,13 +283,21 @@ func (digest ActionBindingDigest) Verify(canonicalBinding []byte) bool {
 	return digest == ComputeActionBindingDigest(canonicalBinding)
 }
 
+// Verify reports whether canonical Trash-layout evidence binds to this value.
+// It is a data-consistency check and never authorizes a layout or operation.
+func (binding TrashLayoutBinding) Verify(canonicalBinding []byte) bool {
+	return binding == ComputeTrashLayoutBinding(canonicalBinding)
+}
+
 func (digest PlanDigest) Bytes() []byte          { return append([]byte(nil), digest.value[:]...) }
 func (digest ActionBindingDigest) Bytes() []byte { return append([]byte(nil), digest.value[:]...) }
+func (binding TrashLayoutBinding) Bytes() []byte { return append([]byte(nil), binding.value[:]...) }
 func (digest ConfigDigest) Bytes() []byte        { return append([]byte(nil), digest.value[:]...) }
 func (digest EvidenceDigest) Bytes() []byte      { return append([]byte(nil), digest.value[:]...) }
 
 func (digest PlanDigest) String() string          { return hex.EncodeToString(digest.value[:]) }
 func (digest ActionBindingDigest) String() string { return hex.EncodeToString(digest.value[:]) }
+func (binding TrashLayoutBinding) String() string { return hex.EncodeToString(binding.value[:]) }
 func (digest ConfigDigest) String() string        { return hex.EncodeToString(digest.value[:]) }
 func (digest EvidenceDigest) String() string      { return hex.EncodeToString(digest.value[:]) }
 
@@ -267,8 +305,18 @@ func (digest PlanDigest) Validate() error { return validateDigest("plan digest",
 func (digest ActionBindingDigest) Validate() error {
 	return validateDigest("action binding digest", digest.value)
 }
+func (binding TrashLayoutBinding) Validate() error {
+	return validateDigest("Trash layout binding", binding.value)
+}
 func (digest ConfigDigest) Validate() error   { return validateDigest("config digest", digest.value) }
 func (digest EvidenceDigest) Validate() error { return validateDigest("evidence digest", digest.value) }
+
+// IsZero reports whether the binding has no valid digest value.
+func (binding TrashLayoutBinding) IsZero() bool { return binding.value == [planDigestLength]byte{} }
+
+// Equal reports whether two immutable Trash-layout bindings have the same
+// digest value.
+func (binding TrashLayoutBinding) Equal(other TrashLayoutBinding) bool { return binding == other }
 
 func newDigest(value []byte) ([planDigestLength]byte, error) {
 	if len(value) != planDigestLength {

@@ -67,6 +67,80 @@ func TestRestoreTrashNoReplaceDoesNotOverwriteOccupiedSource(t *testing.T) {
 	}
 }
 
+func TestRestoreTrashNoReplaceClassifiesRenameFailuresByEffectCertainty(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		rename          func(int, string, int, string) error
+		wantDisposition TrashRestoreDisposition
+		wantError       error
+		wantRestored    bool
+		wantToken       bool
+	}{
+		{
+			name: "known unavailable no-replace rename",
+			rename: func(int, string, int, string) error {
+				return unix.EOPNOTSUPP
+			},
+			wantDisposition: TrashRestoreNotApplied,
+			wantError:       ErrUnsupported,
+			wantToken:       true,
+		},
+		{
+			name: "interrupted rename before an observed effect is indeterminate",
+			rename: func(int, string, int, string) error {
+				return unix.EINTR
+			},
+			wantDisposition: TrashRestoreIndeterminate,
+			wantError:       ErrInterrupted,
+			wantToken:       true,
+		},
+		{
+			name: "rename may have restored content before reporting interruption",
+			rename: func(oldParentFD int, oldName string, newParentFD int, newName string) error {
+				if err := unix.Renameat2(oldParentFD, oldName, newParentFD, newName, unix.RENAME_NOREPLACE); err != nil {
+					return err
+				}
+				return unix.EINTR
+			},
+			wantDisposition: TrashRestoreIndeterminate,
+			wantError:       ErrInterrupted,
+			wantRestored:    true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newTrashMoveFixture(t)
+			moveTrashMoveFixture(t, fixture)
+
+			disposition, err := restoreTrashNoReplaceWith(
+				context.Background(),
+				fixture.sourceParent,
+				"item",
+				fixture.directories,
+				fixture.publication.token,
+				fixture.expected,
+				trashRestoreHooks{
+					renameNoReplace: test.rename,
+				},
+			)
+			if !errors.Is(err, test.wantError) {
+				t.Fatalf("restoreTrashNoReplaceWith() error = %v, want %v", err, test.wantError)
+			}
+			if disposition != test.wantDisposition {
+				t.Fatalf("restoreTrashNoReplaceWith() disposition = %v, want %v", disposition, test.wantDisposition)
+			}
+			if restored := testEntryExists(t, fixture.sourceParent, "item"); restored != test.wantRestored {
+				t.Fatalf("source restored after failed rename = %t, want %t", restored, test.wantRestored)
+			}
+			if retained := trashMoveEntryExists(t, fixture.source.filesFD, fixture.publication.token); retained != test.wantToken {
+				t.Fatalf("Trash token retained after failed rename = %t, want %t", retained, test.wantToken)
+			}
+			if got := readTopologyTestFile(t, fixture.source.infoFD, fixture.publication.token+trashInfoFilenameSuffix); string(got) != string(fixture.publication.contents) {
+				t.Fatalf("Trash metadata changed during failed restoration: got %q, want %q", got, fixture.publication.contents)
+			}
+		})
+	}
+}
+
 func TestRestoreTrashNoReplaceRejectsStaleFilesIdentityBeforeRename(t *testing.T) {
 	fixture := newTrashMoveFixture(t)
 	moveTrashMoveFixture(t, fixture)

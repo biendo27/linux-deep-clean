@@ -103,6 +103,18 @@ generic delete capability. `RestoreNoReplace` first revalidates the staged
 object and never overwrites an occupied original name. Unknown rename/restore
 outcomes are interrupted and require reconciliation, not a blind retry.
 
+The currently implemented reconciliation for a metadata-indeterminate
+`trash_path` outcome is observational and metadata-only over already-bound
+durable and topology-qualified Trash state. A v2 Trash intent retains an
+opaque immutable layout binding derived from the authority-selected topology
+and metadata mapping. Before it maps metadata, selects descriptors, or probes,
+reconciliation reloads the ticket and requires the supplied lease to produce
+that exact binding. Historical v1 records remain readable, but an unbound v1
+metadata ticket is unsupported and remains outstanding rather than guessing a
+layout. This path never retries a change, renames, unlinks, restores, or
+deletes, and it cannot derive mutation authority; uncertain content remains
+retained.
+
 Directory descriptors used for durability are syncable. A required directory
 sync failure means durable completion is not claimed; unsupported descriptor or
 filesystem behavior rejects, while an uncertain sync result is interrupted.

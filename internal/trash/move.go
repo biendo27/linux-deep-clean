@@ -40,14 +40,15 @@ func MoveToTrash(
 }
 
 type trashMoveRequest struct {
-	action       domain.Action
-	planDigest   domain.PlanDigest
-	sourceLease  *linuxfs.ParentLease
-	root         domain.TrustedRootID
-	source       pathbytes.BytePath
-	basename     string
-	precondition domain.FilesystemPrecondition
-	deletedAt    time.Time
+	action             domain.Action
+	planDigest         domain.PlanDigest
+	sourceLease        *linuxfs.ParentLease
+	root               domain.TrustedRootID
+	source             pathbytes.BytePath
+	basename           string
+	precondition       domain.FilesystemPrecondition
+	trashLayoutBinding domain.TrashLayoutBinding
+	deletedAt          time.Time
 }
 
 type trashMoveOperations struct {
@@ -116,6 +117,13 @@ func newTrashMoveRequest(
 	if source.RootID() != root || trashLease.RootID() != root {
 		return trashMoveRequest{}, fmt.Errorf("%w: action source, parent lease, and Trash lease roots differ", linuxfs.ErrUnsupported)
 	}
+	trashLayoutBinding, err := trashLease.MetadataReconciliationIdentity()
+	if err != nil {
+		return trashMoveRequest{}, classifyTrashMetadataAuthorityFailure(err)
+	}
+	if err := trashLayoutBinding.Validate(); err != nil {
+		return trashMoveRequest{}, fmt.Errorf("%w: topology-qualified Trash layout binding: %v", linuxfs.ErrUnsupported, err)
+	}
 	if _, err := trashLease.MetadataPathFor(sourcePath); err != nil {
 		return trashMoveRequest{}, classifyTrashMetadataAuthorityFailure(err)
 	}
@@ -124,14 +132,15 @@ func newTrashMoveRequest(
 	}
 
 	return trashMoveRequest{
-		action:       clonedAction,
-		planDigest:   planDigest,
-		sourceLease:  source,
-		root:         root,
-		source:       sourcePath,
-		basename:     basename,
-		precondition: precondition,
-		deletedAt:    deletedAt,
+		action:             clonedAction,
+		planDigest:         planDigest,
+		sourceLease:        source,
+		root:               root,
+		source:             sourcePath,
+		basename:           basename,
+		precondition:       precondition,
+		trashLayoutBinding: trashLayoutBinding,
+		deletedAt:          deletedAt,
 	}, nil
 }
 
@@ -174,7 +183,9 @@ func moveToTrashWith(ctx context.Context, ledger recoveryport.Ledger, request tr
 		return nil, err
 	}
 
-	ticket, err := ledger.Reserve(ctx, request.action, request.planDigest)
+	ticket, err := ledger.Reserve(ctx, request.action, request.planDigest, recoveryport.Reservation{
+		TrashLayoutBinding: request.trashLayoutBinding,
+	})
 	if err != nil {
 		if ticket != nil {
 			if validationErr := validateTrashMoveTicket(ticket, request); validationErr != nil {
@@ -267,6 +278,9 @@ func validateTrashMoveExecution(ctx context.Context, ledger recoveryport.Ledger,
 	}
 	if err := request.planDigest.Validate(); err != nil {
 		return fmt.Errorf("%w: Trash move plan digest: %v", linuxfs.ErrUnsupported, err)
+	}
+	if err := request.trashLayoutBinding.Validate(); err != nil {
+		return fmt.Errorf("%w: topology-qualified Trash layout binding: %v", linuxfs.ErrUnsupported, err)
 	}
 	if err := validateTrashDeletionDate(request.deletedAt); err != nil {
 		return fmt.Errorf("%w: Trash deletion date: %v", linuxfs.ErrUnsupported, err)
@@ -364,6 +378,9 @@ func recordTrashMoveIndeterminate(ctx context.Context, ledger recoveryport.Ledge
 func transitionTrashMoveTicket(ctx context.Context, ledger recoveryport.Ledger, ticket recoveryport.Ticket, request trashMoveRequest, transition recoveryport.Transition) (recoveryport.Ticket, error) {
 	updated, err := ledger.Transition(ctx, ticket, transition)
 	if updated != nil {
+		if ticket == nil || updated.Token() != ticket.Token() {
+			return ticket, errors.Join(err, fmt.Errorf("%w: durable transition changed the Trash ticket identity", linuxfs.ErrUnsupported))
+		}
 		if validationErr := validateTrashMoveTicket(updated, request); validationErr != nil {
 			return updated, errors.Join(err, validationErr)
 		}
@@ -412,6 +429,9 @@ func validateTrashMoveTicket(ticket recoveryport.Ticket, request trashMoveReques
 		ticket.ActionID() != request.action.ID || ticket.ActionKind() != domain.ActionTrashPath ||
 		ticket.Destination() != recoveryport.DestinationTrash {
 		return fmt.Errorf("%w: durable Trash ticket does not bind this action source", linuxfs.ErrUnsupported)
+	}
+	if !ticket.TrashLayoutBinding().Equal(request.trashLayoutBinding) {
+		return fmt.Errorf("%w: durable Trash ticket layout binding does not match this move", linuxfs.ErrUnsupported)
 	}
 	if !sameTrashMovePrecondition(ticket.Precondition(), request.precondition) {
 		return fmt.Errorf("%w: durable Trash ticket precondition does not bind this source", linuxfs.ErrUnsupported)
