@@ -15,14 +15,22 @@ import (
 	"github.com/biendo27/linux-deep-clean/internal/mounts"
 )
 
-// Store is an open-only, per-mount quarantine authority. It intentionally
-// exposes only recovery metadata and Close: retaining, restoring, scanning,
-// and removing content need distinct source-bound, durable contracts that do
-// not exist yet.
+// Store is a per-mount quarantine authority. Its only content operation is
+// Retain, a bounded source-bound move whose result remains intentionally
+// unavailable for later restore or reconciliation because the durable ledger
+// has no quarantine-layout binding. It never exposes a path, descriptor, or
+// generic mutator.
 type Store struct {
-	mu        sync.Mutex
-	directory privateDirectory
-	rootID    domain.TrustedRootID
+	mu sync.Mutex
+
+	// directory preserves the private lifecycle seam used while opening and
+	// closing a qualified authority. privateLease is the concrete, opaque
+	// LinuxFS bridge used only inside withRetain; it is populated for every
+	// production Store and is never returned to callers.
+	directory    privateDirectory
+	privateLease *linuxfs.PrivateDirectoryLease
+	rootID       domain.TrustedRootID
+	retain       quarantineRetainer
 }
 
 // privateDirectory is the minimum qualified directory capability this package
@@ -75,7 +83,13 @@ func openPerMountQuarantineWith(kind mounts.LayoutKind, openDirectory func() (pr
 		return nil, fmt.Errorf("%w: private quarantine root identity: %v", linuxfs.ErrUnsupported, err)
 	}
 
-	return &Store{directory: directory, rootID: rootID}, nil
+	privateLease, _ := directory.(*linuxfs.PrivateDirectoryLease)
+	return &Store{
+		directory:    directory,
+		privateLease: privateLease,
+		rootID:       rootID,
+		retain:       linuxfs.RetainQuarantineNoReplace,
+	}, nil
 }
 
 // RootID returns the non-path identity of the trusted source root that
@@ -94,9 +108,11 @@ func (store *Store) Close() error {
 		return nil
 	}
 	store.mu.Lock()
+	defer store.mu.Unlock()
 	directory := store.directory
 	store.directory = nil
-	store.mu.Unlock()
+	store.privateLease = nil
+	store.retain = nil
 	if directory == nil {
 		return nil
 	}

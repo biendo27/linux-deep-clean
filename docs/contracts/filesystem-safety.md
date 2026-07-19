@@ -103,6 +103,17 @@ generic delete capability. `RestoreNoReplace` first revalidates the staged
 object and never overwrites an occupied original name. Unknown rename/restore
 outcomes are interrupted and require reconciliation, not a blind retry.
 
+`RetainQuarantineNoReplace` is a distinct descriptor-rooted primitive for the
+exact `LayoutPrivateQuarantine` kind. It accepts an already-resolved
+`quarantine_path` source, a canonical ledger-issued token, and an exact
+destructive precondition; it freshly requalifies the source parent and private
+layout, requires same-mount distinct directory identities, performs
+`RENAME_NOREPLACE`, verifies the retained name with the post-move mask, and
+syncs the Quarantine directory before the source parent. A collision or
+pre-effect failure is not applied; uncertain rename, verification, or sync is
+indeterminate. It never copies, retries, restores, scans, removes, or grants
+deletion authority.
+
 The implemented `trash_path` reconciliation paths are observational and
 positive-only over already-bound durable and topology-qualified Trash state. A
 v2 Trash intent retains an opaque immutable layout binding derived from the

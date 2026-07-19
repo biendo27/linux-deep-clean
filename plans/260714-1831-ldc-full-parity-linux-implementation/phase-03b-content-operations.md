@@ -45,9 +45,18 @@ ledger port and the existing descriptor-rooted safety APIs.
   identity. Only that evidence appends an open `move_verified` fact. All other
   observations remain outstanding, and this path does not scan, move, restore,
   delete, or clean up.
-- [ ] Broad orphan/recovery reconciliation, high-level restore, quarantine
-  content operations, retention, and the disposable-VM/adversarial exit gates
-  remain pending.
+- [x] Bounded live Quarantine retain: `linuxfs.RetainQuarantineNoReplace`
+  requalifies an exact source parent and `LayoutPrivateQuarantine` authority,
+  then uses same-mount no-replace rename, post-move identity verification, and
+  directory sync. `quarantine.Retain` records only
+  `intent_reserved -> move_dispatch_recorded -> move_verified` or
+  `move_indeterminate`; every non-verified result stays outstanding. It does
+  not scan, restore, reconcile, delete, clean up, or issue a recovery handle.
+- [ ] Broad orphan/recovery reconciliation, high-level restore, Quarantine
+  restore/reconciliation, retention removal, result composition, and the
+  disposable-VM/adversarial exit gates remain pending. Quarantine has no
+  durable layout binding, so its retained tickets cannot safely select a
+  post-crash recovery layout yet.
 
 ## Exit gate
 

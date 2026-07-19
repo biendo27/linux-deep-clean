@@ -119,18 +119,34 @@ restore, but deliberately retains the `.trashinfo` record. It is not a
 ledger-closing recovery operation: current same-UID Trash authority cannot
 safely unlink a name after classifying it.
 
-`quarantine.OpenPerMountQuarantine` remains an open-only boundary. It accepts
-only a `LayoutPrivateQuarantine` lease and returns an opaque store with the
-trusted root identity and idempotent close. It exposes neither a pathname nor
-a descriptor and cannot retain, restore, scan, remove, or otherwise mutate
-content.
+`quarantine.OpenPerMountQuarantine` accepts only a
+`LayoutPrivateQuarantine` lease and returns an opaque store with the trusted
+root identity and idempotent close. Its sole content operation is the bounded
+`quarantine.Retain` composition: it validates an exact already-resolved
+`quarantine_path` action and source, reserves a zero-Trash-binding ledger
+ticket, persists move dispatch, and invokes
+`linuxfs.RetainQuarantineNoReplace`. That primitive requalifies both
+descriptor authorities, uses same-mount `RENAME_NOREPLACE`, proves the
+post-move identity, and syncs the destination then source-parent directories.
+
+After a dispatch reaches the filesystem effect, the only resulting ledger
+paths are `intent_reserved -> move_dispatch_recorded -> move_verified` and
+`intent_reserved -> move_dispatch_recorded -> move_indeterminate`. A known
+post-dispatch no-effect result also remains `move_indeterminate`: this narrow
+operation does not perform reconciliation. An interrupted ledger append
+returns the last candidate or prior ticket without retrying the effect. The
+store exposes neither a
+pathname nor a descriptor and has no restore, scan, removal, generic mutation,
+or cleanup operation. It issues neither a `RecoveryHandle` nor an
+`ActionResult`.
 
 There is no high-level Trash restoration, generic/orphan reconciliation API,
-descriptor-rooted orphan probe, quarantine content operation, or
+descriptor-rooted orphan probe, Quarantine restore/reconciliation, or
 `domain.RecoveryHandle`/`domain.ActionResult` composition. A durable ledger
-record alone never authorizes or performs any content operation. The narrow
-read-only move reconciliation described below is not restoration, cleanup, or
-a generic recovery scan.
+record alone never authorizes or performs a content operation; the bounded
+Quarantine retain path also needs the supplied live, qualified store. The
+narrow read-only Trash move reconciliation described below is not restoration,
+cleanup, or a generic recovery scan.
 
 ## Required eventual Trash ordering
 
@@ -194,12 +210,14 @@ entries are retained and reported by default. Metadata-only entries may be
 cleaned only when a durable LDC-owned intent proves ownership and the
 corresponding cleanup is verified.
 
-Quarantine follows the same no-replace move/verify/sync rules but uses a
-separate authority-attested, private same-mount store. Retained content is
-visible through a recovery handle, excluded from discovery by authority policy,
-and never counted as freed. Retention cleanup may remove only owned, verified
-entries through staged descriptor-walking removal; malformed or unknown entries
-remain retained.
+The implemented Quarantine retain path follows the same no-replace
+move/verify/sync rules but uses a separate authority-attested, private
+same-mount store. It records only the move fact and never reports freed space.
+Because Quarantine tickets have no durable Quarantine-layout binding, no
+post-crash restore or exact-token reconciliation may select a reopened layout
+from those tickets. Retention cleanup, scans, deletion, recovery handles, and
+result composition remain unimplemented; malformed, unknown, and ambiguous
+entries remain retained.
 
 Neither a Trash nor a same-UID private quarantine layout is exclusive removal
 authority. They support move-and-retain only; they cannot enable permanent

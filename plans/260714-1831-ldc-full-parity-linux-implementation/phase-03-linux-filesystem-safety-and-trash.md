@@ -43,7 +43,12 @@ are independently satisfied.
 - Irreversible work stages with `renameat2(..., RENAME_NOREPLACE)` into a private same-mount directory, reopens the token, and compares identity. Mismatch is restored only via no-replace or retained; it is never deleted. Recursive removal walks held FDs and one basename at a time; generic cleanup rejects symlinks, devices, sockets, FIFOs, special files, and unexpected types.
 - Trash uses same-filesystem atomic rename and valid `.trashinfo`; home Trash only on the home filesystem, otherwise qualified `.Trash/$uid` or `.Trash-$uid`. Never copy-delete, cross devices, overwrite a pair, silently switch to permanent deletion, or empty Trash.
 - Publish `.trashinfo` durably before move; fsync metadata and affected directories. Reconcile metadata-only/file-only/interrupted pairs without deleting user content. Restore validates the anchored destination and uses no-replace.
-- Quarantine is private, same-mount, retention-bounded, excluded from discovery, visible via a recovery handle, and never counted as freed space. If a supported/safe per-mount location is not proven, irreversible deletion is unsupported for that root.
+- The implemented Quarantine slice is private, same-mount, no-replace retain,
+  and never counted as freed space. It does not issue a recovery handle or
+  result, and it has no restore, reconciliation, scan, cleanup, or deletion
+  path. A durable Quarantine-layout binding is still required before
+  post-crash recovery selection; an unproven per-mount location remains
+  unsupported.
 
 ### Non-Functional
 
@@ -82,8 +87,15 @@ match: FD-walk removal OR finalize Trash/quarantine durability
 - [x] v2 `recoveryport.Ledger.Reserve` binds each Trash intent to an opaque authority-selected layout/mapping identity; `linuxfs.ProbeOwnedTrashInfo` and `trash.ReconcileIndeterminateTrashMetadata` require that exact binding before mapping, selecting, and running an exact, read-only probe of one current `<token>.trashinfo`. They record only absent or retained metadata as a closed not-applied fact. Readable v1 histories stay unbound and read-only, so their metadata tickets remain outstanding rather than being reconciled against a guessed layout. This path does not scan, move, restore, delete, or clean up.
 - [x] `linuxfs.ProbeOwnedTrashContent`, `linuxfs.ProbeResolvedTargetAbsence`, and `trash.ReconcileIndeterminateTrashMove` provide a current-v2, positive-only proof for an interrupted move: exact owned metadata brackets two stable, freshly requalified descriptor-relative source-absence observations and exact retained-content identity. Only that proof records an open `move_verified` reconciliation fact; source presence, malformed/changed metadata, absent/mismatched content, and all uncertainty remain outstanding without cleanup.
 - [ ] `trash.RestoreFromTrash`, `ReconcileTrashOrphans`, interrupted-restore reconciliation, broader interrupted-move resolution, and a recovery-safe metadata disposition after restoration.
-- [x] `quarantine.OpenPerMountQuarantine` accepts only a requalified `LayoutPrivateQuarantine` lease and exposes root metadata plus idempotent close; it exposes no path, descriptor, or content mutation.
-- [ ] `Retain`, `RestoreNoReplace`, `ApplyRetention`, `ReconcileRetained`; retention removal still uses verified staged-tree primitives.
+- [x] `quarantine.OpenPerMountQuarantine`,
+  `linuxfs.RetainQuarantineNoReplace`, and `quarantine.Retain` provide a
+  qualified, ledger-backed, bounded Quarantine move-and-retain operation.
+  The coordinator records only move dispatch plus verified/indeterminate
+  outcomes, and exposes no path, descriptor, cleanup, scan, or generic
+  mutation capability.
+- [ ] Quarantine restore, retention removal, retained-object reconciliation,
+  and durable Quarantine-layout binding; same-UID private authority does not
+  authorize deletion.
 - [x] `domain.RecoveryHandle` identifies root/token/original `BytePath`/date without absolute-path authority; `domain.ActionResult` distinguishes restored, retained, drifted, interrupted, and indeterminate outcomes.
 - [ ] Wire those result types into actual Trash/quarantine retain, restore, and reconciliation operations after their trusted layout authorities and durable intent records exist.
 
