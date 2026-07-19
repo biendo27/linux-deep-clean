@@ -29,9 +29,10 @@ type ParentLease struct {
 	rootID      domain.TrustedRootID
 	plannedPath pathbytes.BytePath
 
-	mu     sync.Mutex
-	fd     int
-	closed bool
+	mu                    sync.Mutex
+	fd                    int
+	requalificationRootFD int
+	closed                bool
 }
 
 // RootID reports the authority identity inherited from the trusted root lease.
@@ -77,6 +78,117 @@ func (lease *ParentLease) duplicate() (int, error) {
 	return fd, nil
 }
 
+const resolvedParentIdentityMask = domain.FilesystemFieldDevice |
+	domain.FilesystemFieldInode |
+	domain.FilesystemFieldType |
+	domain.FilesystemFieldMountID
+
+// requalifiedPlannedParent duplicates the root retained when this lease was
+// resolved, walks the immutable parent path again, and proves the newly
+// reached directory is the held parent. It returns an owned fresh descriptor
+// for a read-only observation. A detached or replaced lexical parent is
+// drift, never an alternate authority.
+func (lease *ParentLease) requalifiedPlannedParent(ctx context.Context) (int, error) {
+	if err := contextError(ctx); err != nil {
+		return -1, err
+	}
+	if lease == nil {
+		return -1, fmt.Errorf("%w: parent lease is required", ErrUnsupported)
+	}
+	if _, _, err := pathComponentsAndBasename(lease.plannedPath); err != nil {
+		return -1, fmt.Errorf("%w: held parent path is invalid: %v", ErrUnsupported, err)
+	}
+
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if lease.closed || lease.fd < 0 {
+		return -1, fmt.Errorf("%w: parent lease is closed", ErrDrifted)
+	}
+	if lease.requalificationRootFD < 3 {
+		return -1, fmt.Errorf("%w: parent lease has no retained root for requalification", ErrUnsupported)
+	}
+
+	rootFD, err := unix.FcntlInt(uintptr(lease.requalificationRootFD), unix.F_DUPFD_CLOEXEC, 3)
+	if err != nil {
+		return -1, fmt.Errorf("%w: duplicate parent requalification root descriptor: %v", ErrDrifted, err)
+	}
+	freshParentFD, err := openPlannedParentBeneath(ctx, rootFD, lease.plannedPath)
+	if err != nil {
+		return -1, err
+	}
+	keepFreshParent := false
+	defer func() {
+		if !keepFreshParent {
+			_ = unix.Close(freshParentFD)
+		}
+	}()
+
+	held, err := SnapshotFD(lease.fd, resolvedParentIdentityMask)
+	if err != nil {
+		return -1, err
+	}
+	fresh, err := SnapshotFD(freshParentFD, resolvedParentIdentityMask)
+	if err != nil {
+		return -1, err
+	}
+	if held.Type != domain.FileTypeDirectory || fresh.Type != domain.FileTypeDirectory {
+		return -1, driftedField("resolved source parent type")
+	}
+	if held.DeviceMajor != fresh.DeviceMajor || held.DeviceMinor != fresh.DeviceMinor ||
+		held.Inode != fresh.Inode || held.Type != fresh.Type || held.MountID != fresh.MountID {
+		return -1, driftedField("resolved source parent identity")
+	}
+	keepFreshParent = true
+	return freshParentFD, nil
+}
+
+// openPlannedParentBeneath consumes rootFD and returns the parent directory
+// for every component except the immutable final basename. It keeps the same
+// constrained resolution semantics as ResolveParent without constructing a
+// second authority-bearing ParentLease.
+func openPlannedParentBeneath(ctx context.Context, rootFD int, plannedPath pathbytes.BytePath) (int, error) {
+	if rootFD < 3 {
+		if rootFD >= 0 {
+			_ = unix.Close(rootFD)
+		}
+		return -1, fmt.Errorf("%w: invalid parent requalification root descriptor", ErrDrifted)
+	}
+	components, _, err := pathComponentsAndBasename(plannedPath)
+	if err != nil {
+		_ = unix.Close(rootFD)
+		return -1, err
+	}
+
+	currentFD := rootFD
+	keepCurrent := false
+	defer func() {
+		if !keepCurrent && currentFD >= 0 {
+			_ = unix.Close(currentFD)
+		}
+	}()
+	for _, component := range components[:len(components)-1] {
+		if err := contextError(ctx); err != nil {
+			return -1, err
+		}
+		nextFD, err := openDirectoryBeneath(ctx, unix.Openat2, currentFD, component)
+		if err != nil {
+			return -1, err
+		}
+		previousFD := currentFD
+		currentFD = -1
+		if err := unix.Close(previousFD); err != nil {
+			_ = unix.Close(nextFD)
+			return -1, fmt.Errorf("%w: close prior requalified parent descriptor: %v", ErrDrifted, err)
+		}
+		currentFD = nextFD
+	}
+	if err := contextError(ctx); err != nil {
+		return -1, err
+	}
+	keepCurrent = true
+	return currentFD, nil
+}
+
 // Sync makes directory-entry changes durable when the caller has completed a
 // mutation that promises durability. Parent leases are opened read-only rather
 // than O_PATH specifically so this operation has a usable descriptor.
@@ -114,14 +226,22 @@ func (lease *ParentLease) Close() error {
 	}
 	lease.closed = true
 	fd := lease.fd
+	requalificationRootFD := lease.requalificationRootFD
 	lease.fd = -1
-	if fd < 0 {
-		return nil
+	lease.requalificationRootFD = -1
+
+	var closeErr error
+	if fd >= 0 {
+		if err := unix.Close(fd); err != nil {
+			closeErr = fmt.Errorf("close parent descriptor: %w", err)
+		}
 	}
-	if err := unix.Close(fd); err != nil {
-		return fmt.Errorf("close parent descriptor: %w", err)
+	if requalificationRootFD >= 3 && requalificationRootFD != fd {
+		if err := unix.Close(requalificationRootFD); err != nil {
+			closeErr = errors.Join(closeErr, fmt.Errorf("close parent requalification root descriptor: %w", err))
+		}
 	}
-	return nil
+	return closeErr
 }
 
 // TargetHandle owns an O_PATH descriptor for a non-symlink regular file or
@@ -195,7 +315,19 @@ func ResolveParent(ctx context.Context, root *mounts.RootLease, path pathbytes.B
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: duplicate trusted root: %v", ErrDrifted, err)
 	}
-	return resolveParentFromOwnedRootFDForRoot(ctx, rootFD, root.RootID(), path, unix.Openat2)
+	requalificationRootFD, err := root.DuplicateRootDescriptor()
+	if err != nil {
+		_ = unix.Close(rootFD)
+		return nil, "", fmt.Errorf("%w: duplicate trusted root for parent requalification: %v", ErrDrifted, err)
+	}
+	return resolveParentFromOwnedRootFDForRootWithRequalification(
+		ctx,
+		rootFD,
+		requalificationRootFD,
+		root.RootID(),
+		path,
+		unix.Openat2,
+	)
 }
 
 func resolveParentWithRootFD(ctx context.Context, rootFD int, path pathbytes.BytePath, open openat2Func) (*ParentLease, string, error) {
@@ -206,7 +338,19 @@ func resolveParentWithRootFD(ctx context.Context, rootFD int, path pathbytes.Byt
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: duplicate test root descriptor: %v", ErrDrifted, err)
 	}
-	return resolveParentFromOwnedRootFD(ctx, duplicate, path, open)
+	requalificationRootFD, err := unix.FcntlInt(uintptr(rootFD), unix.F_DUPFD_CLOEXEC, 3)
+	if err != nil {
+		_ = unix.Close(duplicate)
+		return nil, "", fmt.Errorf("%w: duplicate test root descriptor for parent requalification: %v", ErrDrifted, err)
+	}
+	return resolveParentFromOwnedRootFDForRootWithRequalification(
+		ctx,
+		duplicate,
+		requalificationRootFD,
+		"",
+		path,
+		open,
+	)
 }
 
 func resolveParentFromOwnedRootFD(ctx context.Context, rootFD int, path pathbytes.BytePath, open openat2Func) (*ParentLease, string, error) {
@@ -215,6 +359,30 @@ func resolveParentFromOwnedRootFD(ctx context.Context, rootFD int, path pathbyte
 
 func resolveParentFromOwnedRootFDForRoot(ctx context.Context, rootFD int, rootID domain.TrustedRootID, path pathbytes.BytePath, open openat2Func) (*ParentLease, string, error) {
 	return resolveParentFromOwnedRootFDForRootWithClose(ctx, rootFD, rootID, path, open, unix.Close)
+}
+
+// resolveParentFromOwnedRootFDForRootWithRequalification retains a second
+// caller-owned root descriptor solely for later in-linuxfs reachability checks
+// of the held parent. The descriptor is never exposed outside ParentLease.
+func resolveParentFromOwnedRootFDForRootWithRequalification(
+	ctx context.Context,
+	rootFD int,
+	requalificationRootFD int,
+	rootID domain.TrustedRootID,
+	path pathbytes.BytePath,
+	open openat2Func,
+) (*ParentLease, string, error) {
+	if requalificationRootFD < 3 {
+		_ = unix.Close(rootFD)
+		return nil, "", fmt.Errorf("%w: invalid parent requalification root descriptor", ErrDrifted)
+	}
+	parent, basename, err := resolveParentFromOwnedRootFDForRoot(ctx, rootFD, rootID, path, open)
+	if err != nil {
+		_ = unix.Close(requalificationRootFD)
+		return nil, "", err
+	}
+	parent.requalificationRootFD = requalificationRootFD
+	return parent, basename, nil
 }
 
 // resolveParentFromOwnedRootFDForRootWithClose keeps close behavior injectable
@@ -275,7 +443,12 @@ func resolveParentFromOwnedRootFDForRootWithClose(ctx context.Context, rootFD in
 	}
 
 	keepCurrent = true
-	return &ParentLease{rootID: rootID, plannedPath: plannedPath, fd: currentFD}, basename, nil
+	return &ParentLease{
+		rootID:                rootID,
+		plannedPath:           plannedPath,
+		fd:                    currentFD,
+		requalificationRootFD: -1,
+	}, basename, nil
 }
 
 // OpenTargetHandle opens a single final basename beneath a held parent. The

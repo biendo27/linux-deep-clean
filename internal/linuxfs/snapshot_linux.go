@@ -172,6 +172,9 @@ func classifyStatxError(err error) error {
 	if errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EINVAL) || errors.Is(err, unix.EOPNOTSUPP) {
 		return fmt.Errorf("%w: statx or its required flags are unavailable: %v", ErrUnsupported, err)
 	}
+	if errors.Is(err, unix.EINTR) {
+		return fmt.Errorf("%w: statx held descriptor interrupted: %v", ErrInterrupted, err)
+	}
 	return fmt.Errorf("%w: statx held descriptor: %v", ErrDrifted, err)
 }
 

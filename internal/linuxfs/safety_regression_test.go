@@ -389,6 +389,7 @@ func TestSafetyRegressionStatxAndOpenat2ClassifiersFailClosed(t *testing.T) {
 		{name: "statx unavailable", err: unix.ENOSYS, want: ErrUnsupported},
 		{name: "statx invalid flags", err: unix.EINVAL, want: ErrUnsupported},
 		{name: "statx operation unsupported", err: unix.EOPNOTSUPP, want: ErrUnsupported},
+		{name: "statx interrupted", err: unix.EINTR, want: ErrInterrupted},
 		{name: "statx io uncertainty", err: unix.EIO, want: ErrDrifted},
 	} {
 		t.Run(test.name, func(t *testing.T) {

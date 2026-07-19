@@ -125,10 +125,12 @@ trusted root identity and idempotent close. It exposes neither a pathname nor
 a descriptor and cannot retain, restore, scan, remove, or otherwise mutate
 content.
 
-There is no high-level Trash restoration or generic reconciliation API, no
-descriptor-rooted orphan probe, no quarantine content operation, or
+There is no high-level Trash restoration, generic/orphan reconciliation API,
+descriptor-rooted orphan probe, quarantine content operation, or
 `domain.RecoveryHandle`/`domain.ActionResult` composition. A durable ledger
-record alone never authorizes or performs any content operation.
+record alone never authorizes or performs any content operation. The narrow
+read-only move reconciliation described below is not restoration, cleanup, or
+a generic recovery scan.
 
 ## Required eventual Trash ordering
 
@@ -168,12 +170,29 @@ ticket-owned `<token>.trashinfo`. Readable legacy v1 tickets lack that binding
 and remain unsupported and outstanding. It may close a v2 ticket only as
 `EventReconciliationResolved` with
 `OutcomeNotApplied` and `MetadataAbsent` or `MetadataRetained`; malformed,
-mismatched, or uncertain metadata leaves the ticket outstanding. It has no
-scan, cleanup, deletion, restoration, rename, or content-operation authority.
-A generic scan of a user's Trash cannot establish LDC ownership. Therefore
-malformed, file-only, collision, and unknown orphan entries are retained and
-reported by default. Metadata-only entries may be cleaned only when a durable
-LDC-owned intent proves ownership and the corresponding cleanup is verified.
+mismatched, or uncertain metadata leaves the ticket outstanding.
+
+`trash.ReconcileIndeterminateTrashMove` is a separate positive-only path for
+one current v2 `EventMoveIndeterminate` ticket. It requires the same exact
+layout binding plus a held source parent that matches the ticket's immutable
+source precondition. After a first exact owned `<token>.trashinfo` probe, it
+requires a stable two-lookup absence proof for the original source basename
+beneath a freshly requalified held-parent identity, proves exact post-move
+identity of `files/<token>`, requires source absence a second time, and
+requires byte-identical metadata on its final exact probe.
+Only then can it append `EventReconciliationResolved` with
+`OutcomeMoveVerified`; that fact deliberately remains open for a later restore
+boundary. Source presence, content absence, malformed or changed metadata,
+identity/layout drift, and every uncertain probe leave the ticket outstanding.
+The checks are point-in-time and cannot create an atomic pair against a
+malicious same-UID actor, so they never authorize cleanup or deletion.
+
+Neither reconciler has scan, cleanup, deletion, restoration, rename, or other
+content-operation authority. A generic scan of a user's Trash cannot establish
+LDC ownership. Therefore malformed, file-only, collision, and unknown orphan
+entries are retained and reported by default. Metadata-only entries may be
+cleaned only when a durable LDC-owned intent proves ownership and the
+corresponding cleanup is verified.
 
 Quarantine follows the same no-replace move/verify/sync rules but uses a
 separate authority-attested, private same-mount store. Retained content is

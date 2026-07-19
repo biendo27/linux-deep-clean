@@ -103,17 +103,34 @@ generic delete capability. `RestoreNoReplace` first revalidates the staged
 object and never overwrites an occupied original name. Unknown rename/restore
 outcomes are interrupted and require reconciliation, not a blind retry.
 
-The currently implemented reconciliation for a metadata-indeterminate
-`trash_path` outcome is observational and metadata-only over already-bound
-durable and topology-qualified Trash state. A v2 Trash intent retains an
-opaque immutable layout binding derived from the authority-selected topology
-and metadata mapping. Before it maps metadata, selects descriptors, or probes,
-reconciliation reloads the ticket and requires the supplied lease to produce
-that exact binding. Historical v1 records remain readable, but an unbound v1
-metadata ticket is unsupported and remains outstanding rather than guessing a
-layout. This path never retries a change, renames, unlinks, restores, or
-deletes, and it cannot derive mutation authority; uncertain content remains
-retained.
+The implemented `trash_path` reconciliation paths are observational and
+positive-only over already-bound durable and topology-qualified Trash state. A
+v2 Trash intent retains an opaque immutable layout binding derived from the
+authority-selected topology and metadata mapping. Before either path maps
+metadata, selects descriptors, or probes, it reloads the ticket and requires
+the supplied lease to produce that exact binding. Historical v1 records remain
+readable, but an unbound v1 ticket is unsupported and remains outstanding
+rather than guessing a layout.
+
+`trash.ReconcileIndeterminateTrashMetadata` accepts only a current
+metadata-indeterminate ticket. It reads exactly its owned `.trashinfo` name and
+records only an absent or retained metadata fact as a closed not-applied
+outcome. `trash.ReconcileIndeterminateTrashMove` accepts only a current
+move-indeterminate ticket plus a held parent resolved for the immutable source
+and the matching topology-qualified Trash lease. It proves, without mutation,
+the exact owned metadata, a stable two-lookup absence of the original source
+basename beneath a freshly requalified held-parent identity, exact post-move
+identity of `files/<token>`, a second stable source absence, and byte-identical
+metadata. Only that evidence records the open
+`move_verified` reconciliation fact; every absence, malformed record, source
+reappearance, identity/layout drift, or uncertain observation leaves the
+ticket outstanding. These checks cannot make the three facts atomic against a
+malicious same-UID actor, so detected disruption fails closed and retained
+content is never cleaned up.
+
+Neither path retries a change, scans, renames, unlinks, restores, or deletes,
+and neither can derive mutation authority from metadata. Generic/orphan and
+restore reconciliation remain unimplemented.
 
 Directory descriptors used for durability are syncable. A required directory
 sync failure means durable completion is not claimed; unsupported descriptor or

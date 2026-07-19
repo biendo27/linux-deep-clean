@@ -37,7 +37,15 @@ ledger port and the existing descriptor-rooted safety APIs.
   absent or retained metadata as a closed not-applied ledger fact. Readable
   unbound v1 histories remain outstanding. This path does not scan, move,
   restore, delete, or clean up.
-- [ ] Broad orphan/content reconciliation, high-level restore, quarantine
+- [x] Positive-only reconciliation for one current v2 Trash
+  `move_indeterminate` ticket: the immutable layout/mapping binding must match
+  before any mapping or probe; exact owned metadata must bracket stable,
+  freshly requalified descriptor-relative source absence and exact
+  `files/<token>` post-move
+  identity. Only that evidence appends an open `move_verified` fact. All other
+  observations remain outstanding, and this path does not scan, move, restore,
+  delete, or clean up.
+- [ ] Broad orphan/recovery reconciliation, high-level restore, quarantine
   content operations, retention, and the disposable-VM/adversarial exit gates
   remain pending.
 
